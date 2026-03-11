@@ -25,6 +25,7 @@ use std::process;
 use std::fs::File;
 use home::home_dir;
 use anyhow::{Result};
+use clap::Parser;
 
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
@@ -64,9 +65,23 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
     }
 }
 
+#[derive(Parser)]
+#[clap(author, version, about)]
+struct Cli {
+    #[arg(short='c', long="config")]
+    config: Option<PathBuf>,
+}
+
 fn main() {
-    let home = home_dir().expect("Could not determine home directory");
-    let config_file_path = home.join("ingest_and_snapshot_config.json");
+    let cli = Cli::parse();
+
+    let config_file_path = match cli.config {
+        Some(file) => file,
+        None => {
+            let home = home_dir().expect("Could not determine home directory");
+            home.join("ingest_and_snapshot_config.json")
+        }
+    };
 
     let config = parse_config_file(config_file_path).unwrap();
 
