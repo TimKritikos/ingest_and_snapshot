@@ -30,6 +30,8 @@ use std::env;
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
 
+mod ui;
+
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
     data_type: String,
@@ -121,4 +123,8 @@ fn main() {
     let config = parse_config_file(config_file_path).unwrap();
 
     println!("allow {:?}\ndeny {:?}",config.allow_device_list ,config.ignore_device_list);
+
+    let ui_handle = ui::init();
+
+    ui_handle.join().unwrap();
 }
