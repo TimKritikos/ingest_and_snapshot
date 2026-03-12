@@ -27,6 +27,8 @@ use home::home_dir;
 use anyhow::{Result};
 use clap::Parser;
 use std::env;
+use nix::sys::statvfs::statvfs;
+use nix::sys::statvfs::FsFlags;
 
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
@@ -66,6 +68,11 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
     }
 }
 
+fn is_read_only(path: PathBuf) -> nix::Result<bool> {
+    let stats = statvfs(&path)?;
+    Ok(stats.flags().contains(FsFlags::ST_RDONLY))
+}
+
 #[derive(Parser)]
 #[clap(author, version, about)]
 struct Cli {
@@ -103,6 +110,11 @@ fn main() {
         media_version != "v2.0\n"
     {
         eprintln!("Invalid media version");
+        process::exit(1);
+    }
+
+    if is_read_only(media_dir).unwrap() {
+        eprintln!("media is mounter read-only");
         process::exit(1);
     }
 
