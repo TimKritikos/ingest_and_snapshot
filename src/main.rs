@@ -26,6 +26,7 @@ use std::fs::File;
 use home::home_dir;
 use anyhow::{Result};
 use clap::Parser;
+use std::env;
 
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
@@ -70,6 +71,9 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
 struct Cli {
     #[arg(short='c', long="config")]
     config: Option<PathBuf>,
+
+    #[arg(short='m', long="media-dir")]
+    media_dir: Option<PathBuf>,
 }
 
 fn main() {
@@ -82,6 +86,25 @@ fn main() {
             home.join("ingest_and_snapshot_config.json")
         }
     };
+
+    let media_dir = match cli.media_dir {
+        Some(path) => path,
+        None => env::current_dir().unwrap(),
+    };
+
+    let media_version_path = media_dir.join("structure_version");
+    if ! media_version_path.exists() {
+        eprintln!("Invalid media directory");
+        process::exit(1);
+    }
+    let media_version = std::fs::read_to_string(media_version_path).unwrap();
+    if media_version != "v3.0-dev\n" &&
+        media_version != "v2.1\n" &&
+        media_version != "v2.0\n"
+    {
+        eprintln!("Invalid media version");
+        process::exit(1);
+    }
 
     let config = parse_config_file(config_file_path).unwrap();
 
