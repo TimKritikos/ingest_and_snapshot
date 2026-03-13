@@ -29,6 +29,8 @@ use clap::Parser;
 use std::env;
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::{thread, time};
 
 mod ui;
 
@@ -122,9 +124,16 @@ fn main() {
 
     let config = parse_config_file(config_file_path).unwrap();
 
-    println!("allow {:?}\ndeny {:?}",config.allow_device_list ,config.ignore_device_list);
+    let (tx, rx): (Sender<ui::UiMessage>, Receiver<ui::UiMessage>) = mpsc::channel();
+    let ui_handle = ui::init(rx);
 
-    let ui_handle = ui::init();
+    tx.send(ui::UiMessage::AddConfig{allow:config.allow_device_list,ignore:config.ignore_device_list}).unwrap();
+
+    let ten_millis = time::Duration::from_millis(2000);
+    let now = time::Instant::now();
+
+    thread::sleep(ten_millis);
+    tx.send(ui::UiMessage::Quit).unwrap();
 
     ui_handle.join().unwrap();
 }
