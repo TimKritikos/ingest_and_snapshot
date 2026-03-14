@@ -129,8 +129,7 @@ fn main() {
 
     tx.send(ui::UiMessage::AddConfig{allow:config.allow_device_list,ignore:config.ignore_device_list}).unwrap();
 
-    let ten_millis = time::Duration::from_millis(2000);
-    let now = time::Instant::now();
+    let ten_millis = time::Duration::from_millis(5000);
 
     thread::sleep(ten_millis);
     tx.send(ui::UiMessage::Quit).unwrap();
