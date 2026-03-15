@@ -9,10 +9,12 @@ use ratatui::style::Color;
 use ratatui::widgets::Paragraph;
 use ratatui::prelude::Stylize;
 use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::style::Style;
 use time_format::now;
 use ratatui::style::Modifier;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::Widget;
 
 #[derive(Debug)]
 pub enum UiMessage {
@@ -46,6 +48,9 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<UiMessage>) -> std::io::Resul
 }
 
 fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
+    let bg = Block::default().style(Style::default().bg(Color::Blue));
+    frame.render_widget(bg, frame.area());
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
@@ -56,10 +61,12 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
 
     let windows  = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .margin(4)
         .constraints(vec![
             Constraint::Percentage(20),
+            Constraint::Length(3),
             Constraint::Percentage(40),
+            Constraint::Length(3),
             Constraint::Percentage(40),
         ])
         .split(layout[1]);
@@ -70,23 +77,95 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
     frame.render_widget(
        Paragraph::new( format!(" {}",timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), layout[0]
     );
-    let transfer_block = Block::default()
-        .title("Transfers")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(Color::Black));
-    frame.render_widget( transfer_block, windows[0]);
+    let transfer_window = DialogBlock::default()
+        .title("Transfers");
+    frame.render_widget( transfer_window.clone(), windows[0]);
 
-    let user_queries_block = Block::default()
-        .title("User queries")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(Color::Black));
-    frame.render_widget( user_queries_block.clone(), windows[1]);
-    frame.render_widget( format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?}",allow,ignore), user_queries_block.inner(windows[1]));
+    let user_queries_window = DialogBlock::default()
+        .title("User queries");
+    frame.render_widget( user_queries_window.clone(), windows[2]);
+    frame.render_widget( format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?}",allow,ignore), user_queries_window.inner(windows[2]));
 
-    let actions_block = Block::default()
-        .title("Actions")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(Color::Black));
-    frame.render_widget(actions_block, windows[2]);
+    let actions_window = DialogBlock::default()
+        .title("Actions");
+    frame.render_widget(actions_window, windows[4]);
 
+}
+
+#[derive(Clone)]
+pub struct DialogBlock<'a> {
+    title: Option<&'a str>,
+    style: Style,
+}
+
+impl<'a> Default for DialogBlock<'a> {
+    fn default() -> Self {
+        Self {
+            title: None,
+            style: Style::default().bg(Color::Gray).fg(Color::Black),
+        }
+    }
+}
+
+impl<'a> DialogBlock<'a> {
+
+    pub fn title(mut self, title: &'a str) -> Self {
+        self.title = Some(title);
+        self
+    }
+
+    pub fn inner(&self, area: Rect) -> Rect {
+        Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        }
+    }
+}
+
+impl Widget for DialogBlock<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+
+        let light = Style::default().fg(Color::White).bg(self.style.bg.unwrap_or(Color::Gray));
+        let dark = Style::default().fg(Color::DarkGray).bg(self.style.bg.unwrap_or(Color::Gray));
+        let fill = self.style;
+
+        for y in area.y + 1..area.y + area.height + 1 {
+            for x in area.x + 2..area.x + area.width + 2 {
+                if x < buf.area.width && y < buf.area.height {
+                    buf[(x, y)].set_style(Style::default().bg(Color::Black));
+                }
+            }
+        }
+
+        // fill background
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                buf[(x, y)].set_style(fill);
+            }
+        }
+
+        // borders
+        for x in area.left()..area.right() {
+            buf[(x, area.top())].set_symbol("─").set_style(light);
+            buf[(x, area.bottom()-1)].set_symbol("─").set_style(dark);
+        }
+
+        for y in area.top()..area.bottom() {
+            buf[(area.left(), y)].set_symbol("│").set_style(light);
+            buf[(area.right()-1, y)].set_symbol("│").set_style(dark);
+        }
+
+        buf[(area.left(), area.top())].set_symbol("┌").set_style(light);
+        buf[(area.right()-1, area.top())].set_symbol("┐").set_style(dark);
+        buf[(area.left(), area.bottom()-1)].set_symbol("└").set_style(light);
+        buf[(area.right()-1, area.bottom()-1)].set_symbol("┘").set_style(dark);
+
+        // title
+        if let Some(title) = self.title {
+            let x = area.x + (area.right()-area.left())/60;
+            buf.set_string(x, area.y, title, fill.add_modifier(Modifier::BOLD));
+        }
+    }
 }
