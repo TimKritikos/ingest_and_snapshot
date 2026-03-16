@@ -67,7 +67,8 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
 
     let windows  = Layout::default()
         .direction(Direction::Vertical)
-        .margin(4)
+        .horizontal_margin(4)
+        .vertical_margin(2)
         .constraints(vec![
             Constraint::Percentage(20),
             Constraint::Length(3),
