@@ -1,23 +1,16 @@
-use ratatui::{DefaultTerminal, Frame};
 use std::thread::JoinHandle;
 use std::thread;
 use std::sync::mpsc::Receiver;
-use ratatui::layout::Layout;
-use ratatui::layout::Direction;
-use ratatui::layout::Constraint;
-use ratatui::style::Color;
-use ratatui::widgets::Paragraph;
+use ratatui::DefaultTerminal;
+use ratatui::Frame;
+use ratatui::layout::{Layout, Direction, Constraint, Rect};
+use ratatui::style::{Color, Style, Modifier};
+use ratatui::widgets::{Paragraph, Block, Widget};
 use ratatui::prelude::Stylize;
-use ratatui::widgets::Block;
-use ratatui::style::Style;
-use time_format::now;
-use ratatui::style::Modifier;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::widgets::Widget;
+use ratatui::text::{Span,Line};
 use sysinfo::System;
-use ratatui::text::Span;
-use ratatui::text::Line;
+use time_format::now;
 
 const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 
@@ -38,13 +31,13 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<UiMessage>) -> std::io::Resul
     let mut l_allow:Vec<String> = [].to_vec();
     let mut l_ignore:Vec<String> = [].to_vec();
     loop {
-        terminal.draw(|frame|{ render(frame, &l_allow, &l_ignore) })?;
+        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore) })?;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                UiMessage::AddConfig { allow, ignore } => {
-                    l_allow=allow;
-                    l_ignore=ignore;
+                UiMessage::AddConfig {allow, ignore} => {
+                    l_allow = allow;
+                    l_ignore = ignore;
                 }
                 UiMessage::Quit => return Ok(()),
             }
@@ -65,7 +58,7 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
             Constraint::Percentage(100)])
         .split(frame.area());
 
-    let windows  = Layout::default()
+    let windows = Layout::default()
         .direction(Direction::Vertical)
         .horizontal_margin(4)
         .vertical_margin(2)
@@ -97,15 +90,15 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
                     Span::styled("RAM:", key_style),
                     Span::styled(format!("{:.1}/{:.1} GiB",(sys.used_memory() as f64 )/(1024.0*1024.0*1024.0), (sys.total_memory() as f64)/(1024.0*1024.0*1024.0)), value_style),
                     Span::styled("   NAME:", key_style),
-                    Span::styled(System::host_name().unwrap(),value_style),
+                    Span::styled(System::host_name().unwrap(), value_style),
                     Span::styled("   ZFS:", key_style),
-                    Span::styled(zfs_version,value_style),
+                    Span::styled(zfs_version, value_style),
                     Span::styled("   ", key_style),
                 ]
            ).right_aligned();
 
     // More layout setting
-    let status_items= Layout::default()
+    let status_items = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![
             Constraint::Fill(1),
@@ -114,20 +107,18 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
         .split(layout[0]);
 
     // Status bars
-    frame.render_widget( Paragraph::new( right_status ).bg(Color::Black).add_modifier(Modifier::BOLD), status_items[1] );
-    frame.render_widget(
-       Paragraph::new( format!(" {}",timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), status_items[0]
-    );
+    frame.render_widget(Paragraph::new(right_status).bg(Color::Black).add_modifier(Modifier::BOLD), status_items[1]);
+    frame.render_widget(Paragraph::new(format!(" {}",timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), status_items[0]);
 
     // Windows
     let transfer_window = DialogBlock::default()
         .title("Transfers");
-    frame.render_widget( transfer_window.clone(), windows[0]);
+    frame.render_widget(transfer_window.clone(), windows[0]);
 
     let user_queries_window = DialogBlock::default()
         .title("User queries");
-    frame.render_widget( user_queries_window.clone(), windows[2]);
-    frame.render_widget( format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?}",allow,ignore), user_queries_window.inner(windows[2]));
+    frame.render_widget(user_queries_window.clone(), windows[2]);
+    frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?}",allow,ignore), user_queries_window.inner(windows[2]));
 
     let actions_window = DialogBlock::default()
         .title("Actions");

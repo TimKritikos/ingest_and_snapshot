@@ -20,17 +20,17 @@
 use std::path::PathBuf;
 use std::io;
 use std::io::Write;
-use serde::{Deserialize, Serialize};
 use std::process;
+use std::env;
 use std::fs::File;
+use std::{thread, time};
+use std::sync::mpsc::{self, Sender, Receiver};
+use clap::Parser;
 use home::home_dir;
 use anyhow::{Result};
-use clap::Parser;
-use std::env;
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
-use std::sync::mpsc::{self, Sender, Receiver};
-use std::{thread, time};
+use serde::{Deserialize, Serialize};
 
 mod ui;
 
@@ -52,8 +52,8 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
             process::exit(0);
         }
         let new_config = MainConfig{
-            data_type:"ingest_and_snapshot_config".to_string(),
-            data_structure_version:"v0.0".to_string(),
+            data_type: "ingest_and_snapshot_config".to_string(),
+            data_structure_version: "v0.0".to_string(),
             allow_device_list: [].to_vec(),
             ignore_device_list: [].to_vec(),
         };
@@ -127,7 +127,7 @@ fn main() {
     let (tx, rx): (Sender<ui::UiMessage>, Receiver<ui::UiMessage>) = mpsc::channel();
     let ui_handle = ui::init(rx);
 
-    tx.send(ui::UiMessage::AddConfig{allow:config.allow_device_list,ignore:config.ignore_device_list}).unwrap();
+    tx.send(ui::UiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
 
     let ten_millis = time::Duration::from_millis(5000);
 
