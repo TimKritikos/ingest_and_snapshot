@@ -3,7 +3,7 @@ use std::thread;
 use std::sync::mpsc::Receiver;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
-use ratatui::layout::{Layout, Direction, Constraint};
+use ratatui::layout::{Layout, Direction, Constraint, Rect};
 use ratatui::style::{Color, Style, Modifier};
 use ratatui::widgets::{Paragraph, Block};
 use ratatui::prelude::Stylize;
@@ -123,6 +123,25 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
 
     let actions_window = tui_dialog_widgets::DialogBlock::default()
         .title("Actions");
-    frame.render_widget(actions_window, windows[4]);
+    frame.render_widget(actions_window.clone(), windows[4]);
+
+    let list = tui_dialog_widgets::DialogSelectionList::new(vec![
+        "Exit",
+        "Finish backup and do snapshot",
+    ])
+        .title("Options")
+        .selected(Some(0))
+        .focused(true);
+
+    let actions_window_content = actions_window.inner(windows[4]);
+
+    let list_area = Rect {
+        x: actions_window_content.x + actions_window_content.width/2 - 25 ,
+        y: actions_window_content.y + actions_window_content.height/2 - 3 ,
+        width: 50,
+        height: 6,
+    };
+
+    frame.render_widget(list, list_area);
 
 }
