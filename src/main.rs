@@ -124,15 +124,23 @@ fn main() {
 
     let config = parse_config_file(config_file_path).unwrap();
 
-    let (tx, rx): (Sender<ui::UiMessage>, Receiver<ui::UiMessage>) = mpsc::channel();
-    let ui_handle = ui::init(rx);
+    let (logic_to_ui_tx, logic_to_ui_rx): (Sender<ui::LogicToUiMessage>, Receiver<ui::LogicToUiMessage>) = mpsc::channel();
+    let (ui_to_logic_tx, ui_to_logic_rx): (Sender<ui::UiToLogicMessage>, Receiver<ui::UiToLogicMessage>) = mpsc::channel();
+    let ui_handle = ui::init(logic_to_ui_rx,ui_to_logic_tx);
 
-    tx.send(ui::UiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
+    logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
 
-    let ten_millis = time::Duration::from_millis(5000);
-
-    thread::sleep(ten_millis);
-    tx.send(ui::UiMessage::Quit).unwrap();
-
+    'outer: loop {
+        thread::sleep(time::Duration::from_millis(50));
+        while let Ok(msg) = ui_to_logic_rx.try_recv() {
+            match msg {
+                ui::UiToLogicMessage::Quit => {
+                    logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+                    break 'outer;
+                },
+            }
+        }
+    }
     ui_handle.join().unwrap();
+
 }

@@ -1,6 +1,7 @@
 use std::thread::JoinHandle;
 use std::thread;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::{Layout, Direction, Constraint, Rect};
@@ -10,43 +11,91 @@ use ratatui::prelude::Stylize;
 use ratatui::text::{Span,Line};
 use sysinfo::System;
 use time_format::now;
+use crossterm::event;
+use std::time::Duration;
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
 
 mod tui_dialog_widgets;
 
 const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 
 #[derive(Debug)]
-pub enum UiMessage {
+pub enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
     Quit,
 }
+pub enum UiToLogicMessage {
+    Quit,
+}
 
-pub fn init(rx: Receiver<UiMessage>) -> JoinHandle<()> {
+pub fn init(rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> JoinHandle<()> {
     color_eyre::install().unwrap();
     thread::spawn(|| {
-        ratatui::run(|terminal| { app(terminal,rx)}).unwrap();
+        ratatui::run(|terminal| { app(terminal,rx,tx)}).unwrap();
     })
 }
 
-fn app(terminal: &mut DefaultTerminal,rx: Receiver<UiMessage>) -> std::io::Result<()> {
+#[derive(PartialEq)]
+enum SelectedAction {
+    Quit,
+    Snapshot,
+}
+
+struct UiState {
+    selecte_action:SelectedAction,
+}
+
+fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
     let mut l_allow:Vec<String> = [].to_vec();
     let mut l_ignore:Vec<String> = [].to_vec();
+    let mut selected_action = SelectedAction::Quit;
     loop {
-        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore) })?;
+        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action) })?;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                UiMessage::AddConfig {allow, ignore} => {
+                LogicToUiMessage::AddConfig {allow, ignore} => {
                     l_allow = allow;
                     l_ignore = ignore;
                 }
-                UiMessage::Quit => return Ok(()),
+                LogicToUiMessage::Quit => return Ok(()),
+            }
+        }
+
+        if event::poll(Duration::from_millis(200))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+
+                    KeyCode::Up => {
+                        selected_action = match selected_action {
+                            SelectedAction::Snapshot => SelectedAction::Quit,
+                            SelectedAction::Quit => SelectedAction::Quit,
+                        }
+                    }
+
+                    KeyCode::Down => {
+                        selected_action = match selected_action {
+                            SelectedAction::Snapshot => SelectedAction::Snapshot,
+                            SelectedAction::Quit => SelectedAction::Snapshot,
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match selected_action {
+                            SelectedAction::Snapshot => {},
+                            SelectedAction::Quit => {
+                                tx.send(UiToLogicMessage::Quit).unwrap();
+                            },
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
 }
 
-fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
+fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>, selected_action:&SelectedAction) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -130,7 +179,11 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>) {
         "Finish backup and do snapshot",
     ])
         .title("Options")
-        .selected(Some(0))
+        .selected(Some(match selected_action {
+                SelectedAction::Quit => 0,
+                SelectedAction::Snapshot => 1,
+            }
+        ))
         .focused(true);
 
     let actions_window_content = actions_window.inner(windows[4]);
