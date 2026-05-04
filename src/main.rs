@@ -31,6 +31,8 @@ use anyhow::{Result};
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
 use serde::{Deserialize, Serialize};
+use udev::MonitorBuilder;
+use std::ffi::OsStr;
 
 mod ui;
 
@@ -59,7 +61,7 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
         };
 
         let mut config_file = File::create(config_file_path)?;
-        let  _ = config_file.write_all( serde_json::to_string(&new_config)?.as_bytes());
+        config_file.write_all( serde_json::to_string(&new_config)?.as_bytes())?;
         Ok(new_config)
     }else{
         match std::fs::read_to_string(&config_file_path) {
@@ -118,7 +120,7 @@ fn main() {
     }
 
     if is_read_only(media_dir).unwrap() {
-        eprintln!("media is mounter read-only");
+        eprintln!("media is mounted read-only");
         process::exit(1);
     }
 
@@ -130,6 +132,13 @@ fn main() {
 
     logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
 
+    let monitor = MonitorBuilder::new()
+        .unwrap()
+        .match_subsystem("block")
+        .unwrap()
+        .listen()
+        .unwrap();
+
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
         while let Ok(msg) = ui_to_logic_rx.try_recv() {
@@ -138,6 +147,23 @@ fn main() {
                     logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
                     break 'outer;
                 },
+            }
+        }
+
+        for event in monitor.iter() {
+            let device = event.device();
+            if device.action() == Some(OsStr::new("add")){
+                if let Some(devlinks) = device.property_value("DEVLINKS") {
+                    // DEVLINKS is a space-separated list of symlinks
+                    let links = devlinks.to_string_lossy();
+                    for link in links.split_whitespace() {
+                        if link.contains("/dev/disk/by-id/") {
+                            logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name:format!("{}", link)}).unwrap();
+                            thread::sleep(time::Duration::from_millis(1000));
+                            break;
+                        }
+                    }
+                }
             }
         }
     }

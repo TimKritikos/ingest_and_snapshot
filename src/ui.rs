@@ -23,6 +23,7 @@ const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 #[derive(Debug)]
 pub enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
+    NewTransfer { name: String },
     Quit,
 }
 pub enum UiToLogicMessage {
@@ -49,9 +50,10 @@ struct UiState {
 fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
     let mut l_allow:Vec<String> = [].to_vec();
     let mut l_ignore:Vec<String> = [].to_vec();
+    let mut new_transfer_name:String = "".to_string();
     let mut selected_action = SelectedAction::Quit;
     loop {
-        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action) })?;
+        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action, &new_transfer_name) })?;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -60,6 +62,9 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
                     l_ignore = ignore;
                 }
                 LogicToUiMessage::Quit => return Ok(()),
+                LogicToUiMessage::NewTransfer {name} => {
+                    new_transfer_name = name;
+                }
             }
         }
 
@@ -95,7 +100,7 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
     }
 }
 
-fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>, selected_action:&SelectedAction) {
+fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:&SelectedAction, new_transfer_name:&String) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -168,7 +173,7 @@ fn render(frame: &mut Frame, allow:&Vec<String>, ignore:&Vec<String>, selected_a
     let user_queries_window = tui_dialog_widgets::DialogBlock::default()
         .title("User queries");
     frame.render_widget(user_queries_window.clone(), windows[2]);
-    frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?}",allow,ignore), user_queries_window.inner(windows[2]));
+    frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New tranfer:{}",allow,ignore,new_transfer_name), user_queries_window.inner(windows[2]));
 
     let actions_window = tui_dialog_widgets::DialogBlock::default()
         .title("Actions");
