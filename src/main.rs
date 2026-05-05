@@ -141,7 +141,7 @@ fn main() {
 
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
-        while let Ok(msg) = ui_to_logic_rx.try_recv() {
+        if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui::UiToLogicMessage::Quit => {
                     logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
@@ -152,16 +152,14 @@ fn main() {
 
         for event in monitor.iter() {
             let device = event.device();
-            if device.action() == Some(OsStr::new("add")){
-                if let Some(devlinks) = device.property_value("DEVLINKS") {
-                    // DEVLINKS is a space-separated list of symlinks
-                    let links = devlinks.to_string_lossy();
-                    for link in links.split_whitespace() {
-                        if link.contains("/dev/disk/by-id/") {
-                            logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name:format!("{}", link)}).unwrap();
-                            thread::sleep(time::Duration::from_millis(1000));
-                            break;
-                        }
+            if device.action() == Some(OsStr::new("add")) && let Some(devlinks) = device.property_value("DEVLINKS") {
+                // DEVLINKS is a space-separated list of symlinks
+                let links = devlinks.to_string_lossy();
+                for link in links.split_whitespace() {
+                    if link.contains("/dev/disk/by-id/") {
+                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string()}).unwrap();
+                        thread::sleep(time::Duration::from_millis(1000));
+                        break;
                     }
                 }
             }

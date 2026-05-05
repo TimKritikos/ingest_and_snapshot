@@ -68,33 +68,31 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
             }
         }
 
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
+        if event::poll(Duration::from_millis(200))? && let Event::Key(key) = event::read()? {
+            match key.code {
 
-                    KeyCode::Up => {
-                        selected_action = match selected_action {
-                            SelectedAction::Snapshot => SelectedAction::Quit,
-                            SelectedAction::Quit => SelectedAction::Quit,
-                        }
+                KeyCode::Up => {
+                    selected_action = match selected_action {
+                        SelectedAction::Snapshot => SelectedAction::Quit,
+                        SelectedAction::Quit => SelectedAction::Quit,
                     }
-
-                    KeyCode::Down => {
-                        selected_action = match selected_action {
-                            SelectedAction::Snapshot => SelectedAction::Snapshot,
-                            SelectedAction::Quit => SelectedAction::Snapshot,
-                        }
-                    }
-                    KeyCode::Enter => {
-                        match selected_action {
-                            SelectedAction::Snapshot => {},
-                            SelectedAction::Quit => {
-                                tx.send(UiToLogicMessage::Quit).unwrap();
-                            },
-                        }
-                    }
-                    _ => {}
                 }
+
+                KeyCode::Down => {
+                    selected_action = match selected_action {
+                        SelectedAction::Snapshot => SelectedAction::Snapshot,
+                        SelectedAction::Quit => SelectedAction::Snapshot,
+                    }
+                }
+                KeyCode::Enter => {
+                    match selected_action {
+                        SelectedAction::Snapshot => {},
+                        SelectedAction::Quit => {
+                            tx.send(UiToLogicMessage::Quit).unwrap();
+                        },
+                    }
+                }
+                _ => {}
             }
         }
     }
