@@ -174,24 +174,24 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
     frame.render_widget(Paragraph::new(format!(" {}",timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), status_items[0]);
 
     // Windows
+    let mut window_index=0;
+
     let transfer_window = tui_dialog_widgets::DialogBlock::default()
         .title("Transfers");
-    frame.render_widget(transfer_window.clone(), windows[0]);
+    frame.render_widget(transfer_window.clone(), windows[window_index]);
+    window_index+=2;
 
-    let actions_idx;
     if show_user_queries {
         let user_queries_window = tui_dialog_widgets::DialogBlock::default()
             .title("User queries");
         frame.render_widget(user_queries_window.clone(), windows[2]);
         frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New tranfer:{}",allow,ignore,new_transfer_name), user_queries_window.inner(windows[2]));
-        actions_idx = 4;
-    } else {
-        actions_idx = 2;
+        window_index+=2;
     }
 
     let actions_window = tui_dialog_widgets::DialogBlock::default()
         .title("Actions");
-    frame.render_widget(actions_window.clone(), windows[actions_idx]);
+    frame.render_widget(actions_window.clone(), windows[window_index]);
 
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
         "Exit",
@@ -205,7 +205,7 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         ))
         .focused(true);
 
-    let actions_window_content = actions_window.inner(windows[actions_idx]);
+    let actions_window_content = actions_window.inner(windows[window_index]);
 
     let list_area = Rect {
         x: actions_window_content.x + actions_window_content.width/2 - 25 ,
@@ -213,6 +213,7 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         width: 50,
         height: 6,
     };
+    //window_index+=2;
 
     frame.render_widget(list, list_area);
 
