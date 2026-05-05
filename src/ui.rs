@@ -20,10 +20,14 @@ mod tui_dialog_widgets;
 
 const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 
+pub enum DeviceEvent {
+    DeviceUnplugged,
+}
+
 #[derive(Debug)]
 pub enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
-    NewTransfer { name: String },
+    NewTransfer { name: String, rx_control: Receiver<DeviceEvent> },
     Quit,
 }
 pub enum UiToLogicMessage {
@@ -50,11 +54,14 @@ struct UiState {
 fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
     let mut l_allow:Vec<String> = [].to_vec();
     let mut l_ignore:Vec<String> = [].to_vec();
-    let mut new_transfer_name:String = "".to_string();
+    let mut active_transfers: Vec<(String, Receiver<DeviceEvent>)> = Vec::new();
     let mut selected_action = SelectedAction::Quit;
-    let mut show_user_queries = false;
     loop {
-        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action, &new_transfer_name, show_user_queries) })?;
+        active_transfers.retain(|(_, rx_control)| {
+            !matches!(rx_control.try_recv(), Ok(DeviceEvent::DeviceUnplugged))
+        });
+        let active_names: Vec<&str> = active_transfers.iter().map(|(n, _)| n.as_str()).collect();
+        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action, &active_names) })?;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -63,9 +70,8 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
                     l_ignore = ignore;
                 }
                 LogicToUiMessage::Quit => return Ok(()),
-                LogicToUiMessage::NewTransfer {name} => {
-                    new_transfer_name = name;
-                    show_user_queries = true;
+                LogicToUiMessage::NewTransfer {name, rx_control} => {
+                    active_transfers.push((name, rx_control));
                 }
             }
         }
@@ -100,7 +106,7 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
     }
 }
 
-fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:&SelectedAction, new_transfer_name:&String, show_user_queries:bool) {
+fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:&SelectedAction, active_names:&[&str]) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -113,6 +119,7 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
             Constraint::Percentage(100)])
         .split(frame.area());
 
+    let show_user_queries = !active_names.is_empty();
     let windows = Layout::default()
         .direction(Direction::Vertical)
         .horizontal_margin(4)
@@ -182,10 +189,15 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
     window_index+=2;
 
     if show_user_queries {
+        let title = if active_names.len() > 1 {
+            format!("User queries [{} queued]", active_names.len() - 1)
+        } else {
+            "User queries".to_string()
+        };
         let user_queries_window = tui_dialog_widgets::DialogBlock::default()
-            .title("User queries");
-        frame.render_widget(user_queries_window.clone(), windows[2]);
-        frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New tranfer:{}",allow,ignore,new_transfer_name), user_queries_window.inner(windows[2]));
+            .title(&title);
+        frame.render_widget(user_queries_window.clone(), windows[window_index]);
+        frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New transfer:{}", allow, ignore, active_names[0]), user_queries_window.inner(windows[window_index]));
         window_index+=2;
     }
 

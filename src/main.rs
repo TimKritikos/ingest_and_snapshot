@@ -17,6 +17,7 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::io;
 use std::io::Write;
@@ -139,6 +140,8 @@ fn main() {
         .listen()
         .unwrap();
 
+    let mut device_senders: HashMap<String, Sender<ui::DeviceEvent>> = HashMap::new();
+
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
@@ -152,15 +155,22 @@ fn main() {
 
         for event in monitor.iter() {
             let device = event.device();
+            let syspath = device.syspath().to_string_lossy().into_owned();
             if device.action() == Some(OsStr::new("add")) && let Some(devlinks) = device.property_value("DEVLINKS") {
                 // DEVLINKS is a space-separated list of symlinks
                 let links = devlinks.to_string_lossy();
                 for link in links.split_whitespace() {
                     if link.contains("/dev/disk/by-id/") {
-                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string()}).unwrap();
+                        let (tx_control, rx_control) = mpsc::channel::<ui::DeviceEvent>();
+                        device_senders.insert(syspath.clone(), tx_control);
+                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string(), rx_control}).unwrap();
                         thread::sleep(time::Duration::from_millis(1000));
                         break;
                     }
+                }
+            } else if device.action() == Some(OsStr::new("remove")) {
+                if let Some(tx_control) = device_senders.remove(&syspath) {
+                    let _ = tx_control.send(ui::DeviceEvent::DeviceUnplugged);
                 }
             }
         }
