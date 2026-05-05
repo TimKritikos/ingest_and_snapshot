@@ -52,8 +52,9 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
     let mut l_ignore:Vec<String> = [].to_vec();
     let mut new_transfer_name:String = "".to_string();
     let mut selected_action = SelectedAction::Quit;
+    let mut show_user_queries = false;
     loop {
-        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action, &new_transfer_name) })?;
+        terminal.draw( |frame| { render(frame, &l_allow, &l_ignore, &selected_action, &new_transfer_name, show_user_queries) })?;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -64,6 +65,7 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
                 LogicToUiMessage::Quit => return Ok(()),
                 LogicToUiMessage::NewTransfer {name} => {
                     new_transfer_name = name;
+                    show_user_queries = true;
                 }
             }
         }
@@ -98,7 +100,7 @@ fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<
     }
 }
 
-fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:&SelectedAction, new_transfer_name:&String) {
+fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:&SelectedAction, new_transfer_name:&String, show_user_queries:bool) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -115,13 +117,21 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         .direction(Direction::Vertical)
         .horizontal_margin(4)
         .vertical_margin(2)
-        .constraints(vec![
-            Constraint::Percentage(20),
-            Constraint::Length(3),
-            Constraint::Percentage(40),
-            Constraint::Length(3),
-            Constraint::Percentage(40),
-        ])
+        .constraints(if show_user_queries {
+            vec![
+                Constraint::Percentage(20),
+                Constraint::Length(3),
+                Constraint::Percentage(40),
+                Constraint::Length(3),
+                Constraint::Percentage(40),
+            ]
+        } else {
+            vec![
+                Constraint::Percentage(60),
+                Constraint::Length(3),
+                Constraint::Percentage(40),
+            ]
+        })
         .split(layout[1]);
 
     // Get right status data
@@ -168,14 +178,20 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         .title("Transfers");
     frame.render_widget(transfer_window.clone(), windows[0]);
 
-    let user_queries_window = tui_dialog_widgets::DialogBlock::default()
-        .title("User queries");
-    frame.render_widget(user_queries_window.clone(), windows[2]);
-    frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New tranfer:{}",allow,ignore,new_transfer_name), user_queries_window.inner(windows[2]));
+    let actions_idx;
+    if show_user_queries {
+        let user_queries_window = tui_dialog_widgets::DialogBlock::default()
+            .title("User queries");
+        frame.render_widget(user_queries_window.clone(), windows[2]);
+        frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New tranfer:{}",allow,ignore,new_transfer_name), user_queries_window.inner(windows[2]));
+        actions_idx = 4;
+    } else {
+        actions_idx = 2;
+    }
 
     let actions_window = tui_dialog_widgets::DialogBlock::default()
         .title("Actions");
-    frame.render_widget(actions_window.clone(), windows[4]);
+    frame.render_widget(actions_window.clone(), windows[actions_idx]);
 
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
         "Exit",
@@ -189,7 +205,7 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         ))
         .focused(true);
 
-    let actions_window_content = actions_window.inner(windows[4]);
+    let actions_window_content = actions_window.inner(windows[actions_idx]);
 
     let list_area = Rect {
         x: actions_window_content.x + actions_window_content.width/2 - 25 ,
