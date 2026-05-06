@@ -164,7 +164,6 @@ fn main() {
                         let (tx_control, rx_control) = mpsc::channel::<ui::DeviceEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
                         logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string(), rx_control}).unwrap();
-                        thread::sleep(time::Duration::from_millis(1000));
                         break;
                     }
                 }
