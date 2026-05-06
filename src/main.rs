@@ -25,6 +25,7 @@ use std::process;
 use std::env;
 use std::fs::File;
 use std::{thread, time};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::mpsc::{self, Sender, Receiver};
 use clap::Parser;
 use home::home_dir;
@@ -133,6 +134,133 @@ fn main() {
 
     logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
 
+    // Dummy transfers for UI development/testing
+    let logic_to_ui_tx_dummy = logic_to_ui_tx.clone();
+    thread::spawn(move || {
+        let now_ms = || -> u64 {
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+        };
+
+        thread::sleep(time::Duration::from_millis(300));
+
+        // Transfer 1: historical finished transfer (simulating a restore from saved state)
+        let (tx1, rx1) = mpsc::channel::<ui::TransferEvent>();
+        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
+            name: "/dev/disk/by-id/usb-SanDisk_Ultra_USB_3.0_AA010203-0:0".to_string(),
+            camera_name: "Sony A7 IV".to_string(),
+            rx_control: rx1,
+        }).unwrap();
+        let total1: u64 = 4 * 1024 * 1024 * 1024;
+        let t_end = now_ms() - 5 * 60 * 1000; // finished 5 minutes ago
+        let t_start = t_end - 80 * 1000;       // took 80 seconds
+        let speed_profile: &[u64] = &[
+            15, 32, 58, 75, 88, 95, 100, 98, 105, 110,
+            108, 115, 112, 108, 102, 110, 118, 115, 108, 95,
+        ];
+        let interval_ms = (t_end - t_start) / speed_profile.len() as u64;
+        let mut bytes1: u64 = 0;
+        let samples1: Vec<(u64, u64)> = speed_profile.iter().enumerate().map(|(i, &spd_mbps)| {
+            bytes1 = (bytes1 + spd_mbps * 1_000_000 * interval_ms / 1000).min(total1);
+            (t_start + i as u64 * interval_ms, bytes1)
+        }).collect();
+        tx1.send(ui::TransferEvent::TransferStarted { bytes_total: total1 }).unwrap();
+        tx1.send(ui::TransferEvent::TransferSamples(samples1)).unwrap();
+        // No TransferFinished needed — the UI transitions to Finished when bytes_done >= bytes_total
+
+        // Transfer 2: waiting — device detected, user query pending
+        let (tx2, rx2) = mpsc::channel::<ui::TransferEvent>();
+        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
+            name: "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
+            camera_name: "Nikon Z9".to_string(),
+            rx_control: rx2,
+        }).unwrap();
+        //tx2.send(ui::TransferEvent::UserQuery {
+        //    question: "Allow transfer from Kingston DataTraveler 3.0? (y/n)".to_string(),
+        //}).unwrap();
+
+        // Transfer 4: two-phase speed test — live, visually verify x-axis is % completion.
+        // First half of data at 15 MB/s (slow), second half at 120 MB/s (fast).
+        // The left half of the chart should have short bars, right half tall bars.
+        let (tx4, rx4) = mpsc::channel::<ui::TransferEvent>();
+        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
+            name: "/dev/disk/by-id/usb-TwoPhase_SpeedTest-0:0".to_string(),
+            camera_name: "Canon EOS R5".to_string(),
+            rx_control: rx4,
+        }).unwrap();
+
+        // 100 MB total: 50 MB slow (~3.3 s) then 50 MB fast (~0.4 s)
+        let total4:          u64 = 100 * 1024 * 1024;
+        let slow_bps:        u64 = 15  * 1024 * 1024; // 15  MB/s
+        let fast_bps:        u64 = 120 * 1024 * 1024; // 120 MB/s
+        let bytes_per_sample: u64 = 2 * 1024 * 1024;  // 2 MB per sample
+        let slow_ms:         u64 = bytes_per_sample * 1000 / slow_bps; // ~133 ms
+        let fast_ms:         u64 = bytes_per_sample * 1000 / fast_bps; //  ~17 ms
+
+        tx4.send(ui::TransferEvent::TransferStarted { bytes_total: total4 }).unwrap();
+        thread::spawn(move || {
+            let now_ms = || -> u64 {
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+            };
+            let mut b4: u64 = 0;
+            let half4 = total4 / 2;
+            loop {
+                let sleep_ms = if b4 < half4 { slow_ms } else { fast_ms };
+                thread::sleep(time::Duration::from_millis(sleep_ms));
+                b4 = (b4 + bytes_per_sample).min(total4);
+                if tx4.send(ui::TransferEvent::TransferSamples(vec![(now_ms(), b4)])).is_err() { break; }
+                if b4 >= total4 { break; }
+            }
+        });
+
+        // Transfer 3: live in-progress — 50 samples/sec with varied speed
+        let (tx3, rx3) = mpsc::channel::<ui::TransferEvent>();
+        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
+            name: "/dev/disk/by-id/usb-WD_Elements_25A3_CC030609-0:0".to_string(),
+            camera_name: "Fujifilm GFX 100S".to_string(),
+            rx_control: rx3,
+        }).unwrap();
+
+        // Total sized so the bar reaches ~85% over the demo run (visually informative)
+        let total3: u64 = 1024 * 1024 * 1024; // 1 GB
+        tx3.send(ui::TransferEvent::TransferStarted { bytes_total: total3 }).unwrap();
+
+        // Speed profile in MB/s; cycled at 50 Hz with noise.
+        // Ramp-up phase followed by a plateau with periodic dips, bursts, and noise.
+        let speed_profile_mbs: &[u64] = &[
+            // ramp-up (~0.5 s)
+            12, 18, 26, 36, 46, 56, 65, 72, 78, 83, 87, 90, 92, 94, 95, 96, 97, 98, 99, 100,
+            // plateau — varied (80-entry block cycled over remaining steps)
+            102, 105, 108, 112, 115, 118, 115, 112, 108, 105,
+            102, 100,  98,  95,  92,  88,  85,  82,  80,  78, // dip (buffer flush)
+             82,  88,  92,  96, 100, 105, 110, 115, 118, 120,
+            122, 125, 128, 130, 132, 130, 128, 125, 122, 118,
+            115, 112, 108, 105, 102, 100,  98,  96,  94,  92,
+             90,  88,  85,  82,  80,  78,  76,  74,  72,  70, // second dip
+             75,  80,  86,  92,  98, 104, 110, 115, 118, 120,
+            122, 125, 128, 132, 135, 132, 128, 124, 120, 116,
+        ];
+
+        thread::spawn(move || {
+            let now_ms = || -> u64 {
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+            };
+            let _tx2_keep_alive = tx2; // keeps transfer 2 alive for the duration of this thread
+            let mut bytes3: u64 = 0;
+            let mut i = 0u64;
+            loop {
+                thread::sleep(time::Duration::from_millis(20));
+                let base_mbs = speed_profile_mbs[i as usize % speed_profile_mbs.len()];
+                let noise_pct = ((i * 11 + 7) % 25) as i64 - 12;
+                let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
+                let step_bytes = mbs * 1024 * 1024 / 50;
+                bytes3 = (bytes3 + step_bytes).min(total3);
+                i += 1;
+                if tx3.send(ui::TransferEvent::TransferSamples(vec![(now_ms(), bytes3)])).is_err() { break; }
+                if bytes3 >= total3 { break; }
+            }
+        });
+    });
+
     let monitor = MonitorBuilder::new()
         .unwrap()
         .match_subsystem("block")
@@ -140,7 +268,7 @@ fn main() {
         .listen()
         .unwrap();
 
-    let mut device_senders: HashMap<String, Sender<ui::DeviceEvent>> = HashMap::new();
+    let mut device_senders: HashMap<String, Sender<ui::TransferEvent>> = HashMap::new();
 
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
@@ -161,15 +289,15 @@ fn main() {
                 let links = devlinks.to_string_lossy();
                 for link in links.split_whitespace() {
                     if link.contains("/dev/disk/by-id/") {
-                        let (tx_control, rx_control) = mpsc::channel::<ui::DeviceEvent>();
+                        let (tx_control, rx_control) = mpsc::channel::<ui::TransferEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
-                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string(), rx_control}).unwrap();
+                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string(), camera_name: String::new(), rx_control}).unwrap();
                         break;
                     }
                 }
             } else if device.action() == Some(OsStr::new("remove")) {
                 if let Some(tx_control) = device_senders.remove(&syspath) {
-                    let _ = tx_control.send(ui::DeviceEvent::DeviceUnplugged);
+                    let _ = tx_control.send(ui::TransferEvent::DeviceUnplugged);
                 }
             }
         }
