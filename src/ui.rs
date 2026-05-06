@@ -4,21 +4,21 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
-use ratatui::layout::{Layout, Direction, Constraint, Rect};
-use ratatui::style::{Color, Style, Modifier};
-use ratatui::widgets::{Paragraph, Block};
-use ratatui::prelude::Stylize;
-use ratatui::text::{Span,Line};
-use sysinfo::System;
-use time_format::now;
+use ratatui::layout::{Layout, Direction, Constraint};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::Block;
 use crossterm::event;
 use std::time::Duration;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 
 mod tui_dialog_widgets;
+mod status_bar;
+mod transfers_window;
+mod user_queries_window;
+mod user_actions_window;
 
-const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
+use user_actions_window::SelectedAction;
 
 pub enum DeviceEvent {
     DeviceUnplugged,
@@ -39,16 +39,6 @@ pub fn init(rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> Joi
     thread::spawn(|| {
         ratatui::run(|terminal| { app(terminal,rx,tx)}).unwrap();
     })
-}
-
-#[derive(PartialEq)]
-enum SelectedAction {
-    Quit,
-    Snapshot,
-}
-
-struct UiState {
-    selecte_action:SelectedAction,
 }
 
 fn app(terminal: &mut DefaultTerminal,rx: Receiver<LogicToUiMessage>,tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
@@ -141,92 +131,20 @@ fn render(frame: &mut Frame, allow:&[String], ignore:&[String], selected_action:
         })
         .split(layout[1]);
 
-    // Get right status data
-    let current_time = now().unwrap();
-    let timestamp = time_format::strftime_utc("%a, %d %b %Y %T %Z", current_time).unwrap();
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let zfs_version = match std::fs::read_to_string(ZFS_VERSION_FILE) {
-        Ok(version) => version,
-        Err(_e) => "unavailable".to_string(),
-    };
-
-    let key_style = Style::default().fg(Color::White).bg(Color::Black);
-    let value_style = Style::default().fg(Color::Cyan).bg(Color::Black);
-
-    let right_status = Line::from(
-                vec![
-                    Span::styled("RAM:", key_style),
-                    Span::styled(format!("{:.1}/{:.1} GiB",(sys.used_memory() as f64 )/(1024.0*1024.0*1024.0), (sys.total_memory() as f64)/(1024.0*1024.0*1024.0)), value_style),
-                    Span::styled("   NAME:", key_style),
-                    Span::styled(System::host_name().unwrap(), value_style),
-                    Span::styled("   ZFS:", key_style),
-                    Span::styled(zfs_version, value_style),
-                    Span::styled("   ", key_style),
-                ]
-           ).right_aligned();
-
-    // More layout setting
-    let status_items = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![
-            Constraint::Fill(1),
-            Constraint::Length(right_status.width().try_into().unwrap()),
-        ])
-        .split(layout[0]);
-
     // Status bars
-    frame.render_widget(Paragraph::new(right_status).bg(Color::Black).add_modifier(Modifier::BOLD), status_items[1]);
-    frame.render_widget(Paragraph::new(format!(" {}",timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), status_items[0]);
+    status_bar::render(frame, layout[0]);
 
     // Windows
     let mut window_index=0;
 
-    let transfer_window = tui_dialog_widgets::DialogBlock::default()
-        .title("Transfers");
-    frame.render_widget(transfer_window.clone(), windows[window_index]);
-    window_index+=2;
+    transfers_window::render(frame, windows[window_index]);
+    window_index += 2;
 
     if show_user_queries {
-        let title = if active_names.len() > 1 {
-            format!("User queries [{} queued]", active_names.len() - 1)
-        } else {
-            "User queries".to_string()
-        };
-        let user_queries_window = tui_dialog_widgets::DialogBlock::default()
-            .title(&title);
-        frame.render_widget(user_queries_window.clone(), windows[window_index]);
-        frame.render_widget(format!("> hello from ingest and snapshot. Allow: {:?} Ignore: {:?} New transfer:{}", allow, ignore, active_names[0]), user_queries_window.inner(windows[window_index]));
-        window_index+=2;
+        user_queries_window::render(frame, windows[window_index], allow, ignore, active_names);
+        window_index += 2;
     }
 
-    let actions_window = tui_dialog_widgets::DialogBlock::default()
-        .title("Actions");
-    frame.render_widget(actions_window.clone(), windows[window_index]);
-
-    let list = tui_dialog_widgets::DialogSelectionList::new(vec![
-        "Exit",
-        "Finish backup and do snapshot",
-    ])
-        .title("Options")
-        .selected(Some(match selected_action {
-                SelectedAction::Quit => 0,
-                SelectedAction::Snapshot => 1,
-            }
-        ))
-        .focused(true);
-
-    let actions_window_content = actions_window.inner(windows[window_index]);
-
-    let list_area = Rect {
-        x: actions_window_content.x + actions_window_content.width/2 - 25 ,
-        y: actions_window_content.y + actions_window_content.height/2 - 3 ,
-        width: 50,
-        height: 6,
-    };
+    user_actions_window::render(frame, windows[window_index], selected_action);
     //window_index+=2;
-
-    frame.render_widget(list, list_area);
-
 }
