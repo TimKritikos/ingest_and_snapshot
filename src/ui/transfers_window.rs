@@ -7,8 +7,10 @@ use ratatui::buffer::Buffer;
 use super::tui_dialog_widgets;
 use super::{Transfer, TransferStatus};
 
-const ITEM_HEIGHT: u16 = 4; // 1 title row + 3 chart rows
-const ITEM_GAP: u16 = 1;
+const ITEM_HEIGHT:   u16 = 4; // 1 title row + 3 chart rows
+const ITEM_GAP:      u16 = 1;
+const PADDING_SIDES: u16 = 2;
+const PADDING_TOP:   u16 = 1;
 
 pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 
@@ -33,6 +35,14 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 
     if inner.height == 0 { return; } //TODO: actually handle too small windows
 
+    let padded = Rect {
+        x:      inner.x.saturating_add(PADDING_SIDES),
+        y:      inner.y.saturating_add(PADDING_TOP),
+        width:  inner.width.saturating_sub(PADDING_SIDES * 2),
+        height: inner.height.saturating_sub(PADDING_TOP),
+    };
+    if padded.width == 0 || padded.height == 0 { return; }
+
     let mut transfers_sorted: Vec<&Transfer> = transfers.iter().collect();
     transfers_sorted.sort_by_key(|t| match t.status {
         TransferStatus::InProgress => 0,
@@ -42,11 +52,11 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 
     for (i, transfer) in transfers_sorted.iter().enumerate() {
         let y_offset = i as u16 * (ITEM_HEIGHT + ITEM_GAP);
-        if y_offset >= inner.height { break; }
-        let item_h = ITEM_HEIGHT.min(inner.height - y_offset);
+        if y_offset >= padded.height { break; }
+        let item_h = ITEM_HEIGHT.min(padded.height - y_offset);
         frame.render_widget(
             TransferItem { transfer },
-            Rect { x: inner.x, y: inner.y + y_offset, width: inner.width, height: item_h },
+            Rect { x: padded.x, y: padded.y + y_offset, width: padded.width, height: item_h },
         );
     }
 }
