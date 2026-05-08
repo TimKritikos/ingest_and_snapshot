@@ -159,9 +159,9 @@ fn main() {
         ];
         let interval_ms = (t_end - t_start) / speed_profile.len() as u64;
         let mut bytes1: u64 = 0;
-        let samples1: Vec<(u64, u64)> = speed_profile.iter().enumerate().map(|(i, &spd_mbps)| {
+        let samples1: Vec<ui::TransferSample> = speed_profile.iter().enumerate().map(|(i, &spd_mbps)| {
             bytes1 = (bytes1 + spd_mbps * 1_000_000 * interval_ms / 1000).min(total1);
-            (t_start + i as u64 * interval_ms, bytes1)
+            ui::TransferSample { timestamp_ms: t_start + i as u64 * interval_ms, bytes_done: bytes1 }
         }).collect();
         tx1.send(ui::TransferEvent::TransferStarted { bytes_total: total1 }).unwrap();
         tx1.send(ui::TransferEvent::TransferSamples(samples1)).unwrap();
@@ -207,7 +207,7 @@ fn main() {
                 let sleep_ms = if b4 < half4 { slow_ms } else { fast_ms };
                 thread::sleep(time::Duration::from_millis(sleep_ms));
                 b4 = (b4 + bytes_per_sample).min(total4);
-                if tx4.send(ui::TransferEvent::TransferSamples(vec![(now_ms(), b4)])).is_err() { break; }
+                if tx4.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: b4 }])).is_err() { break; }
                 if b4 >= total4 { break; }
             }
         });
@@ -255,7 +255,7 @@ fn main() {
                 let step_bytes = mbs * 1024 * 1024 / 50;
                 bytes3 = (bytes3 + step_bytes).min(total3);
                 i += 1;
-                if tx3.send(ui::TransferEvent::TransferSamples(vec![(now_ms(), bytes3)])).is_err() { break; }
+                if tx3.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes3 }])).is_err() { break; }
                 if bytes3 >= total3 { break; }
             }
         });

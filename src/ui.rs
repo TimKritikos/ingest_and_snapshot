@@ -21,10 +21,15 @@ mod user_actions_window;
 
 use user_actions_window::SelectedAction;
 
+pub struct TransferSample {
+    pub timestamp_ms: u64,
+    pub bytes_done: u64,
+}
+
 pub enum TransferEvent {
     DeviceUnplugged,
     TransferStarted { bytes_total: u64 },
-    TransferSamples(Vec<(u64, u64)>),   // (unix_ms, bytes_done)
+    TransferSamples(Vec<TransferSample>),
     UserQuery { question: String },
 }
 
@@ -38,9 +43,8 @@ pub struct Transfer {
     pub name: String,
     pub camera_name: String,
     pub bytes_total: u64,
-    pub samples: Vec<(u64, u64)>,
+    pub samples: Vec<TransferSample>,
     pub status: TransferStatus,
-    pub alive: bool,
     pub rx_control: Receiver<TransferEvent>,
 }
 
@@ -63,8 +67,8 @@ pub fn init(rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> Joi
 }
 
 fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
-    let mut l_allow: Vec<String> = vec![];
-    let mut l_ignore: Vec<String> = vec![];
+    let mut l_allow: Vec<String> = Vec::new();
+    let mut l_ignore: Vec<String> = Vec::new();
     let mut transfers: Vec<Transfer> = Vec::new();
     let mut query_queue: VecDeque<String> = VecDeque::new();
     let mut selected_action = SelectedAction::Quit;
@@ -75,7 +79,6 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
             while let Ok(event) = transfer.rx_control.try_recv() {
                 match event {
                     TransferEvent::DeviceUnplugged => {
-                        transfer.alive = false;
                     }
                     TransferEvent::TransferStarted { bytes_total } => {
                         transfer.bytes_total = bytes_total;
@@ -84,8 +87,8 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                     TransferEvent::TransferSamples(new_samples) => {
                         transfer.samples.extend(new_samples);
                         if matches!(transfer.status, TransferStatus::InProgress) {
-                            let bytes_done = transfer.samples.last().map(|&(_, b)| b).unwrap_or(0);
-                            if transfer.bytes_total > 0 && bytes_done >= transfer.bytes_total {
+                            let bytes_done = transfer.samples.last().map(|s| s.bytes_done).unwrap_or(0);
+                            if bytes_done >= transfer.bytes_total {  // TODO Check and report if we end up with more bytes
                                 transfer.status = TransferStatus::Finished;
                             }
                         }
@@ -115,7 +118,6 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                         bytes_total: 0,
                         samples: Vec::new(),
                         status: TransferStatus::NotStarted,
-                        alive: true,
                         rx_control,
                     });
                 }
@@ -152,10 +154,25 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     }
 }
 
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1}GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1}MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1}KiB", bytes as f64 / 1024.0)
+    } else if bytes != 1 {
+        format!("{}Bytes", bytes)
+    } else {
+        format!("{}Byte", bytes)
+    }
+}
+
 fn render(frame: &mut Frame, selected_action: &SelectedAction, query_queue: &VecDeque<String>, transfers: &[Transfer]) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
+    // Setting layout
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
@@ -186,8 +203,10 @@ fn render(frame: &mut Frame, selected_action: &SelectedAction, query_queue: &Vec
         })
         .split(layout[1]);
 
+    // Status bars
     status_bar::render(frame, layout[0]);
 
+    // Windows
     let mut window_index = 0;
 
     transfers_window::render(frame, windows[window_index], transfers);
