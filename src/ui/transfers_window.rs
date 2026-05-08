@@ -73,35 +73,60 @@ impl Widget for TransferItem<'_> {
         let bracket_style = Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD);
         let badge_style   = Style::default().fg(badge_fg).bg(bg).add_modifier(Modifier::BOLD);
         let name_style    = Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD);
-        let stats_style   = Style::default().fg(Color::White).bg(bg);
+        let stats_style   = Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD);
         let sep_style     = Style::default().bg(bg);
+
+        let presentage = if self.transfer.bytes_total > 0 {
+            bytes_done * 100 / self.transfer.bytes_total
+        } else { 0 };
 
         let mut spans = vec![
             Span::styled("[", bracket_style),
             Span::styled(badge_inner, badge_style),
             Span::styled("]", bracket_style),
             Span::styled(" ", sep_style),
+            Span::styled(format!("{:>3}% | ", presentage), stats_style),
             Span::styled(self.transfer.camera_name.as_str(), name_style),
         ];
 
-        if matches!(self.transfer.status, TransferStatus::InProgress) {
-            let pct   = if self.transfer.bytes_total > 0 { bytes_done * 100 / self.transfer.bytes_total } else { 0 };
-            let speed = derive_current_speed(&self.transfer.samples);
-            spans.push(Span::styled(
-                format!("  {}%  {}/{}  @ {}/s",
-                    pct,
-                    format_bytes(bytes_done),
-                    format_bytes(self.transfer.bytes_total),
-                    format_bytes(speed)),
-                stats_style,
-            ));
-        } else if matches!(self.transfer.status, TransferStatus::Finished) {
-            let overall = derive_overall_speed(&self.transfer.samples);
-            spans.push(Span::styled(
-                format!("  avg {}/s", format_bytes(overall)),
-                stats_style,
-            ));
-        }
+        let current_speed = derive_current_speed(&self.transfer.samples);
+        let average_speed = derive_overall_speed(&self.transfer.samples);
+        let maximum_speed = derive_peak_speed(&self.transfer.samples);
+
+        let total_transfer_size = format_bytes(self.transfer.bytes_total);
+        let current_transfer_size  = format_bytes(bytes_done);
+        let progress = format!(" {:>8} /{:>8} |", current_transfer_size, total_transfer_size);
+
+        // Remaining width after the left spans (badge + camera name)
+        let left_width = spans.iter().map(|s| s.width()).sum::<usize>();
+        let remaining  = (area.width as usize).saturating_sub(left_width);
+
+        let speed_stats = if matches!(self.transfer.status, TransferStatus::InProgress) {
+            let full_stat_str  = format!("  avg {:>8}/s  max {:>8}/s  cur {:>8}/s",
+                format_bytes(average_speed), format_bytes(maximum_speed), format_bytes(current_speed));
+
+            if remaining >= progress.len() + full_stat_str.len() {
+                full_stat_str
+            } else {
+                let short_stat_str = format!("  cur {:>8}/s", format_bytes(current_speed));
+
+                if remaining >= progress.len() + short_stat_str.len() {
+                    short_stat_str
+                } else {
+                    String::new()
+                }
+            }
+        } else {
+            let stat_str = format!("  avg {:>8}/s", format_bytes(average_speed));
+            if remaining >= progress.len() + stat_str.len() {
+                stat_str
+            } else {
+                String::new()
+            }
+        };
+
+        let right_stats = format!("{}{} ", progress, speed_stats);
+        spans.push(Span::styled(format!("{:>width$}", right_stats, width = remaining.max(right_stats.len())), stats_style));
 
         Paragraph::new(Line::from(spans)).style(Style::default().bg(bg))
             .render(Rect { x: area.x, y: area.y, width: area.width, height: 1 }, buf);
