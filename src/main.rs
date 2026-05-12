@@ -25,6 +25,7 @@ use std::process;
 use std::env;
 use std::fs::File;
 use std::{thread, time};
+#[cfg(feature = "dummy-ui-data")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::mpsc::{self, Sender, Receiver};
 use clap::Parser;
@@ -134,8 +135,10 @@ fn main() {
 
     logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
 
-    // Dummy transfers for UI development/testing
+    // Dummy UI data for development/testing
+    #[cfg(feature = "dummy-ui-data")]
     let logic_to_ui_tx_dummy = logic_to_ui_tx.clone();
+    #[cfg(feature = "dummy-ui-data")]
     thread::spawn(move || {
         let now_ms = || -> u64 {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
