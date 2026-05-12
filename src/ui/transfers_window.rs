@@ -12,6 +12,24 @@ const ITEM_GAP:      u16 = 1;
 const PADDING_SIDES: u16 = 2;
 const PADDING_TOP:   u16 = 1;
 
+// Unicode braille encodes 8 dots as consecutive bit positions 0x01–0x80, but the spatial
+// layout is not top-to-bottom because braille was originally a 2×3 grid (dots 1–6) and
+// dots 7 & 8 were later appended at the bottom of each column without renumbering:
+//
+//   Left col   Right col        bit
+//    dot1        dot4       0x01  0x08
+//    dot2        dot5       0x02  0x10
+//    dot3        dot6       0x04  0x20
+//    dot7        dot8       0x40  0x80
+
+// Used to draw vertical bars of a given height. Includes all lower braille dots
+const BRAILLE_DOT_LEFT:  [u8; 5] = [0x00, 0x40, 0x44, 0x46, 0x47];
+const BRAILLE_DOT_RIGHT: [u8; 5] = [0x00, 0x80, 0xA0, 0xB0, 0xB8];
+
+// Used when setting specific dots independently
+const BRAILLE_BAR_LEFT:  [u8; 4] = [0x01, 0x02, 0x04, 0x40];
+const BRAILLE_BAR_RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
+
 pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 
     //Generare the window and title
@@ -182,6 +200,36 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[crate::ui::Tran
         }
     }
 
+    // Create an animation for the pending transfers that haven't started
+    if matches!(status, TransferStatus::NotStarted) {
+        let t_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let phase      = (t_ms / 80) as usize; // advances ~12 braille units/sec
+        let period     = 10; // braille units per stripe cycle
+        let lit_width  = 4;  // lit portion within each period
+
+        for row in 0..height {
+            let y = area.y + row as u16;
+            for col in 0..width {
+                let mut bits:  u8 = 0;
+                for dot_row in 0..4usize {
+                    let br = row * 4 + dot_row; // braille row from top of chart
+                    if (col * 2     + br + phase) % period < lit_width { bits  |= BRAILLE_BAR_LEFT[dot_row]; }
+                    if (col * 2 + 1 + br + phase) % period < lit_width { bits |= BRAILLE_BAR_RIGHT[dot_row]; }
+                }
+                if bits == 0 { continue; }
+                let ch = char::from_u32(0x2800 + bits as u32).unwrap_or(' ');
+                buf[(area.x + col as u16, y)]
+                    .set_char(ch)
+                    .set_style(Style::default().fg(Color::Yellow).bg(Color::Black));
+            }
+        }
+        return;
+    }
+
     // Convert the sample data to data that maps byte transfer positions to transfer speed
     let intervals: Vec<(u64, u64)> = samples.windows(2).map(|pair| {
         let dt_ms     = pair[1].timestamp_ms.saturating_sub(pair[0].timestamp_ms);
@@ -229,12 +277,6 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[crate::ui::Tran
             .min(total_braille_rows as u128) as usize;
     }
 
-    // Braille dot bit patterns, indexed by dots filled from the bottom of one column (0–4)
-    // Left column:  dot7(0x40), dot3(0x04), dot2(0x02), dot1(0x01) — accumulated bottom-up
-    // Right column: dot8(0x80), dot6(0x20), dot5(0x10), dot4(0x08) — accumulated bottom-up
-    const LEFT_BITS:  [u8; 5] = [0x00, 0x40, 0x44, 0x46, 0x47];
-    const RIGHT_BITS: [u8; 5] = [0x00, 0x80, 0xA0, 0xB0, 0xB8];
-
     let bar_fg = match status {
         TransferStatus::Finished   => Color::LightBlue,
         TransferStatus::InProgress => Color::Green,
@@ -258,7 +300,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[crate::ui::Tran
                 heights[braille_dot_right].saturating_sub(current_braille_dots_height).min(4)
             } else { 0 };
 
-            let bits = LEFT_BITS[current_char_dot_to_enable_left] | RIGHT_BITS[current_char_dot_to_enable_right];
+            let bits = BRAILLE_DOT_LEFT[current_char_dot_to_enable_left] | BRAILLE_DOT_RIGHT[current_char_dot_to_enable_right];
 
             if bits == 0 {
                 continue;
