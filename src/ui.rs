@@ -11,15 +11,13 @@ use ratatui::widgets::Block;
 use crossterm::event;
 use std::time::Duration;
 use crossterm::event::Event;
-use crossterm::event::KeyCode;
-
 mod tui_dialog_widgets;
 mod status_bar;
 mod transfers_window;
 mod user_queries_window;
 mod user_actions_window;
 
-use user_actions_window::SelectedAction;
+use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
 
 pub struct TransferSample {
     pub timestamp_ms: u64,
@@ -28,9 +26,42 @@ pub struct TransferSample {
 
 pub enum TransferEvent {
     DeviceUnplugged,
+    CameraNameChanged(String),
     TransferStarted { bytes_total: u64 },
     TransferSamples(Vec<TransferSample>),
-    UserQuery { question: String },
+}
+
+pub enum ApproveTransferResponse {
+    Approved,
+    Denied,
+    DeviceOverwrite(Option<String>),
+}
+
+pub struct ApproveTransferQueryUpdate {
+    pub device_product_name: String,
+    pub brand: String,
+    pub serial_number: String,
+    pub transfer_function: String,
+    pub archive_directory: String,
+    pub data_size: u64,
+    pub card_id: String,
+    pub device_overridden: bool,
+}
+
+pub struct ApproveTransferQuery {
+    pub data: ApproveTransferQueryUpdate,
+    pub response_tx: Sender<ApproveTransferResponse>,
+    pub update_rx: Receiver<ApproveTransferQueryUpdate>,
+}
+
+pub struct ScanNewDeviceQuery {
+    pub device_name: String,
+    pub response_tx: Sender<bool>,
+}
+
+pub enum UserQuery {
+    ApproveTransfer(ApproveTransferQuery),
+    ScanNewDevice(ScanNewDeviceQuery),
 }
 
 pub enum TransferStatus {
@@ -48,10 +79,11 @@ pub struct Transfer {
     pub rx_control: Receiver<TransferEvent>,
 }
 
-#[derive(Debug)]
 pub enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
+    SetAvailableDevices(Vec<String>),
     NewTransfer { name: String, camera_name: String, rx_control: Receiver<TransferEvent> },
+    UserQuery(UserQuery),
     Quit,
 }
 
@@ -70,38 +102,51 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut l_allow: Vec<String> = Vec::new();
     let mut l_ignore: Vec<String> = Vec::new();
     let mut transfers: Vec<Transfer> = Vec::new();
-    let mut query_queue: VecDeque<String> = VecDeque::new();
-    let mut selected_action = SelectedAction::Quit;
+    let mut query_queue: VecDeque<UserQuery> = VecDeque::new();
+    let mut available_devices: Option<Vec<String>> = None;
+    let mut actions_state = ActionsWindowState::new();
+    let mut query_state = user_queries_window::QueryWindowState::new();
 
     loop {
         // Process events on each transfer's control channel
-        for transfer in &mut transfers {
-            while let Ok(event) = transfer.rx_control.try_recv() {
+        let mut i = 0;
+        while i < transfers.len() {
+            let mut remove = false;
+            while let Ok(event) = transfers[i].rx_control.try_recv() {
                 match event {
-                    TransferEvent::DeviceUnplugged => {
-                    }
+                    TransferEvent::DeviceUnplugged => { remove = true; }
+                    TransferEvent::CameraNameChanged(name) => { transfers[i].camera_name = name; }
                     TransferEvent::TransferStarted { bytes_total } => {
-                        transfer.bytes_total = bytes_total;
-                        transfer.status = TransferStatus::InProgress;
+                        transfers[i].bytes_total = bytes_total;
+                        transfers[i].status = TransferStatus::InProgress;
                     }
                     TransferEvent::TransferSamples(new_samples) => {
-                        transfer.samples.extend(new_samples);
-                        if matches!(transfer.status, TransferStatus::InProgress) {
-                            let bytes_done = transfer.samples.last().map(|s| s.bytes_done).unwrap_or(0);
-                            if bytes_done >= transfer.bytes_total {  // TODO Check and report if we end up with more bytes
-                                transfer.status = TransferStatus::Finished;
+                        transfers[i].samples.extend(new_samples);
+                        if matches!(transfers[i].status, TransferStatus::InProgress) {
+                            let bytes_done = transfers[i].samples.last().map(|s| s.bytes_done).unwrap_or(0);
+                            if bytes_done >= transfers[i].bytes_total {
+                                transfers[i].status = TransferStatus::Finished;
                             }
                         }
                     }
-                    TransferEvent::UserQuery { question } => {
-                        query_queue.push_back(question);
-                    }
                 }
+            }
+            if remove {
+                transfers.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        //Update the data of the current transfer query if the main logic has sent anything new
+        if let Some(UserQuery::ApproveTransfer(latest_query)) = query_queue.front_mut() {
+            if let Ok(update) = latest_query.update_rx.try_recv() {
+                latest_query.data = update;
             }
         }
 
         terminal.draw(|frame| {
-            render(frame, &selected_action, &query_queue, &transfers)
+            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref())
         })?;
 
         while let Ok(msg) = rx.try_recv() {
@@ -109,6 +154,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                 LogicToUiMessage::AddConfig { allow, ignore } => {
                     l_allow = allow;
                     l_ignore = ignore;
+                }
+                LogicToUiMessage::SetAvailableDevices(devices) => {
+                    available_devices = Some(devices);
                 }
                 LogicToUiMessage::Quit => return Ok(()),
                 LogicToUiMessage::NewTransfer { name, camera_name, rx_control } => {
@@ -121,38 +169,34 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                         rx_control,
                     });
                 }
+                LogicToUiMessage::UserQuery(q) => {
+                    if query_queue.is_empty() {
+                        query_state = user_queries_window::QueryWindowState::new();
+                    }
+                    query_queue.push_back(q);
+                }
             }
         }
 
         if event::poll(Duration::from_millis(16))? && let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Up => {
-                    selected_action = match selected_action {
-                        SelectedAction::Snapshot => SelectedAction::Quit,
-                        SelectedAction::Quit => SelectedAction::Quit,
-                    }
+            if !query_queue.is_empty() {
+                let prev_len = query_queue.len();
+                user_queries_window::handle_key(&mut query_state, key, &mut query_queue, available_devices.as_deref());
+                if query_queue.len() != prev_len {
+                    query_state = user_queries_window::QueryWindowState::new();
                 }
-                KeyCode::Down => {
-                    selected_action = match selected_action {
-                        SelectedAction::Snapshot => SelectedAction::Snapshot,
-                        SelectedAction::Quit => SelectedAction::Snapshot,
-                    }
-                }
-                KeyCode::Enter => {
-                    match selected_action {
-                        SelectedAction::Snapshot => {},
-                        SelectedAction::Quit => {
-                            tx.send(UiToLogicMessage::Quit).unwrap();
-                        },
-                    }
-                }
-                _ => {}
+            } else if let Some(ActionsWindowEvent::Quit) = user_actions_window::handle_key(&mut actions_state, key) {
+                tx.send(UiToLogicMessage::Quit).unwrap();
             }
         }
 
         let _ = (l_allow.as_slice(), l_ignore.as_slice()); // suppress unused warnings until wired up
     }
 }
+
+/// Terminal font cell aspect ratio: cells are approximately this many times taller than wide.
+/// Used to compute visually square dimensions from cell counts.
+pub const FONT_CELL_ASPECT_RATIO: u16 = 2;
 
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
@@ -168,7 +212,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn render(frame: &mut Frame, selected_action: &SelectedAction, query_queue: &VecDeque<String>, transfers: &[Transfer]) {
+fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[String]>) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -181,24 +225,26 @@ fn render(frame: &mut Frame, selected_action: &SelectedAction, query_queue: &Vec
             Constraint::Percentage(100)])
         .split(frame.area());
 
-    let show_user_queries = !query_queue.is_empty();
+    let current_query = query_queue.front();
+    let show_user_queries = current_query.is_some();
+
     let windows = Layout::default()
         .direction(Direction::Vertical)
         .horizontal_margin(4)
         .vertical_margin(2)
         .constraints(if show_user_queries {
             vec![
-                Constraint::Percentage(20),
+                Constraint::Percentage(100),
                 Constraint::Length(3),
-                Constraint::Percentage(40),
+                Constraint::Length(14),
                 Constraint::Length(3),
-                Constraint::Percentage(40),
+                Constraint::Length(3),
             ]
         } else {
             vec![
-                Constraint::Percentage(60),
+                Constraint::Percentage(70),
                 Constraint::Length(3),
-                Constraint::Percentage(40),
+                Constraint::Percentage(30),
             ]
         })
         .split(layout[1]);
@@ -212,10 +258,10 @@ fn render(frame: &mut Frame, selected_action: &SelectedAction, query_queue: &Vec
     transfers_window::render(frame, windows[window_index], transfers);
     window_index += 2;
 
-    if show_user_queries {
-        user_queries_window::render(frame, windows[window_index], query_queue);
+    if let Some(query) = current_query {
+        user_queries_window::render(frame, windows[window_index], query, query_queue.len() - 1, query_state, available_devices);
         window_index += 2;
     }
 
-    user_actions_window::render(frame, windows[window_index], selected_action);
+    user_actions_window::render(frame, windows[window_index], actions_state, !show_user_queries, show_user_queries);
 }

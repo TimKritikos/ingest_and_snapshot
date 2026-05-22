@@ -146,6 +146,14 @@ fn main() {
 
         thread::sleep(time::Duration::from_millis(300));
 
+        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::SetAvailableDevices(vec![
+            "Sony A7 IV".to_string(),
+            "Sony A7R V".to_string(),
+            "Canon EOS R5".to_string(),
+            "Fujifilm GFX 100S".to_string(),
+            "Nikon Z9".to_string(),
+        ])).unwrap();
+
         // Transfer 1: historical finished transfer (simulating a restore from saved state)
         let (tx1, rx1) = mpsc::channel::<ui::TransferEvent>();
         logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
@@ -169,17 +177,6 @@ fn main() {
         tx1.send(ui::TransferEvent::TransferStarted { bytes_total: total1 }).unwrap();
         tx1.send(ui::TransferEvent::TransferSamples(samples1)).unwrap();
         // No TransferFinished needed — the UI transitions to Finished when bytes_done >= bytes_total
-
-        // Transfer 2: waiting — device detected, user query pending
-        let (tx2, rx2) = mpsc::channel::<ui::TransferEvent>();
-        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
-            name: "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
-            camera_name: "Nikon Z9".to_string(),
-            rx_control: rx2,
-        }).unwrap();
-        //tx2.send(ui::TransferEvent::UserQuery {
-        //    question: "Allow transfer from Kingston DataTraveler 3.0? (y/n)".to_string(),
-        //}).unwrap();
 
         // Transfer 4: two-phase speed test — live, visually verify x-axis is % completion.
         // First half of data at 15 MB/s (slow), second half at 120 MB/s (fast).
@@ -247,7 +244,6 @@ fn main() {
             let now_ms = || -> u64 {
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
             };
-            let _tx2_keep_alive = tx2; // keeps transfer 2 alive for the duration of this thread
             let mut bytes3: u64 = 0;
             let mut i = 0u64;
             loop {
@@ -260,6 +256,125 @@ fn main() {
                 i += 1;
                 if tx3.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes3 }])).is_err() { break; }
                 if bytes3 >= total3 { break; }
+            }
+        });
+
+        // Dummy ScanNewDevice query after 10 seconds
+        let logic_to_ui_tx_dummy2 = logic_to_ui_tx_dummy.clone();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_secs(10));
+            let (response_tx, response_rx) = mpsc::channel::<bool>();
+            logic_to_ui_tx_dummy2.send(ui::LogicToUiMessage::UserQuery(
+                ui::UserQuery::ScanNewDevice(ui::ScanNewDeviceQuery {
+                    device_name: "Unknown USB Camera".to_string(),
+                    response_tx,
+                })
+            )).unwrap();
+            let _ = response_rx.recv();
+        });
+
+        // Create Dummy query after 5 seconds
+        thread::spawn(move || {
+            let now_ms = || -> u64 {
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+            };
+
+            thread::sleep(time::Duration::from_secs(5));
+
+            let (tx2, rx2) = mpsc::channel::<ui::TransferEvent>();
+            logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
+                name:        "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
+                camera_name: "Nikon Z9".to_string(),
+                rx_control:  rx2,
+            }).unwrap();
+
+            let (response_tx, response_rx) = mpsc::channel::<ui::ApproveTransferResponse>();
+            let (update_tx,   update_rx)   = mpsc::channel::<ui::ApproveTransferQueryUpdate>();
+
+            logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::UserQuery(
+                ui::UserQuery::ApproveTransfer(ui::ApproveTransferQuery {
+                    data: ui::ApproveTransferQueryUpdate {
+                        device_product_name: "Nikon Z9".to_string(),
+                        brand:               "Nikon".to_string(),
+                        serial_number:       "3102948576".to_string(),
+                        transfer_function:   "rsync_archive".to_string(),
+                        archive_directory:   "/media/archive/2026/05/".to_string(),
+                        data_size:           12 * 1024 * 1024 * 1024,
+                        card_id:             "NIKON_001".to_string(),
+                        device_overridden:   false,
+                    },
+                    response_tx,
+                    update_rx,
+                })
+            )).unwrap();
+
+            while let Ok(msg) = response_rx.recv() {
+                match msg {
+                    ui::ApproveTransferResponse::DeviceOverwrite(name_opt) => {
+                        let update = match name_opt {
+                            Some(name) => {
+                                let _ = tx2.send(ui::TransferEvent::CameraNameChanged(name.clone()));
+                                ui::ApproveTransferQueryUpdate {
+                                    device_product_name: name,
+                                    brand:               "Unknown".to_string(),
+                                    serial_number:       "N/A".to_string(),
+                                    transfer_function:   "rsync_archive".to_string(),
+                                    archive_directory:   "/media/archive/2026/05/".to_string(),
+                                    data_size:           12 * 1024 * 1024 * 1024,
+                                    card_id:             "UNKNOWN".to_string(),
+                                    device_overridden:   true,
+                                }
+                            }
+                            None => {
+                                let _ = tx2.send(ui::TransferEvent::CameraNameChanged("Nikon Z9".to_string()));
+                                ui::ApproveTransferQueryUpdate {
+                                    device_product_name: "Nikon Z9".to_string(),
+                                    brand:               "Nikon".to_string(),
+                                    serial_number:       "3102948576".to_string(),
+                                    transfer_function:   "rsync_archive".to_string(),
+                                    archive_directory:   "/media/archive/2026/05/".to_string(),
+                                    data_size:           12 * 1024 * 1024 * 1024,
+                                    card_id:             "NIKON_001".to_string(),
+                                    device_overridden:   false,
+                                }
+                            }
+                        };
+                        let _ = update_tx.send(update);
+                    }
+                    ui::ApproveTransferResponse::Approved => {
+                        // Start the Nikon Z9 transfer: 500 MB, steady 40–65 MB/s
+                        let total2: u64 = 500 * 1024 * 1024;
+                        let _ = tx2.send(ui::TransferEvent::TransferStarted { bytes_total: total2 });
+                        thread::spawn(move || {
+                            let speed_profile_mbs: &[u64] = &[
+                                // ramp-up
+                                 8, 15, 24, 33, 40, 44, 46, 48, 49, 50,
+                                // steady plateau with gentle variation
+                                51, 53, 55, 57, 58, 57, 55, 53, 51, 50,
+                                49, 48, 47, 46, 48, 51, 54, 57, 60, 62,
+                                63, 62, 60, 57, 54, 51, 48, 46, 48, 51,
+                                54, 57, 60, 63, 65, 63, 60, 57, 54, 51,
+                            ];
+                            let mut bytes2: u64 = 0;
+                            let mut j = 0u64;
+                            loop {
+                                thread::sleep(time::Duration::from_millis(20));
+                                let base_mbs = speed_profile_mbs[j as usize % speed_profile_mbs.len()];
+                                let noise_pct = ((j * 7 + 3) % 21) as i64 - 10;
+                                let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
+                                bytes2 = (bytes2 + mbs * 1024 * 1024 / 50).min(total2);
+                                j += 1;
+                                if tx2.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes2 }])).is_err() { break; }
+                                if bytes2 >= total2 { break; }
+                            }
+                        });
+                        break;
+                    }
+                    ui::ApproveTransferResponse::Denied => {
+                        let _ = tx2.send(ui::TransferEvent::DeviceUnplugged);
+                        break;
+                    }
+                }
             }
         });
     });

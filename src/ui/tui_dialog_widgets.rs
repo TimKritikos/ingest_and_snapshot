@@ -1,6 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Modifier};
-use ratatui::widgets::Widget;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Widget, Paragraph};
 use ratatui::buffer::Buffer;
 
 pub struct DialogSelectionList<'a> {
@@ -60,6 +61,7 @@ impl Widget for DialogSelectionList<'_> {
         }
 
         // Write the box
+        if area.height < 3 { return; }
         let box_area = Rect {
             x: area.x,
             y: area.y + 1,
@@ -199,6 +201,96 @@ impl Widget for DialogBlock<'_> {
         if let Some(title) = self.title {
             let x = area.x + (area.right()-area.left())/60;
             buf.set_string(x, area.y, title, fill.add_modifier(Modifier::BOLD));
+        }
+    }
+}
+
+pub struct DialogFloatingListItem<'a> {
+    pub label: &'a str,
+    pub is_current: bool,
+}
+
+pub struct DialogFloatingList<'a> {
+    title: &'a str,
+    items: Vec<DialogFloatingListItem<'a>>,
+    selected: usize,
+    hint: Option<Line<'a>>,
+}
+
+impl<'a> DialogFloatingList<'a> {
+    pub fn new(title: &'a str) -> Self {
+        Self { title, items: Vec::new(), selected: 0, hint: None }
+    }
+    pub fn items(mut self, items: Vec<DialogFloatingListItem<'a>>) -> Self {
+        self.items = items;
+        self
+    }
+    pub fn selected(mut self, s: usize) -> Self {
+        self.selected = s;
+        self
+    }
+    pub fn hint(mut self, hint: Line<'a>) -> Self {
+        self.hint = Some(hint);
+        self
+    }
+}
+
+impl Widget for DialogFloatingList<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let hint_rows: u16 = if self.hint.is_some() { 1 } else { 0 };
+        let picker_h = (self.items.len() as u16 + hint_rows + 2)
+            .max(5)
+            .min(area.height.saturating_sub(4));
+        let picker_w = (area.width / 2).max(40).min(area.width.saturating_sub(4));
+        let picker_area = Rect {
+            x: area.x + (area.width.saturating_sub(picker_w)) / 2,
+            y: area.y + (area.height.saturating_sub(picker_h)) / 2,
+            width: picker_w,
+            height: picker_h,
+        };
+
+        let clear_style = Style::default().bg(Color::Gray).fg(Color::Black);
+        for y in picker_area.top()..picker_area.bottom() {
+            for x in picker_area.left()..picker_area.right() {
+                buf[(x, y)].set_char(' ').set_style(clear_style);
+            }
+        }
+
+        let block = DialogBlock::default().title(self.title);
+        let inner = block.inner(picker_area);
+        block.render(picker_area, buf);
+
+        let item_style     = Style::default().fg(Color::Black);
+        let selected_style = Style::default().fg(Color::White).bg(Color::Blue).add_modifier(Modifier::BOLD);
+        let current_style  = Style::default().fg(Color::Green);
+
+        let items_height = inner.height.saturating_sub(hint_rows);
+
+        for (i, item) in self.items.iter().enumerate() {
+            if i as u16 >= items_height { break; }
+            let y = inner.y + i as u16;
+            let is_selected = self.selected == i;
+            let row_style = if is_selected { selected_style } else { item_style };
+
+            for x in inner.x..inner.x + inner.width {
+                buf[(x, y)].set_style(row_style);
+            }
+
+            let marker = if item.is_current { "✓ " } else { "  " };
+            let marker_style = if item.is_current { current_style } else { row_style };
+            let row_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
+            Paragraph::new(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(item.label, row_style),
+            ])).render(row_area, buf);
+        }
+
+        if let Some(hint) = self.hint {
+            let hint_y = inner.y + inner.height.saturating_sub(1);
+            if inner.height > 0 {
+                let hint_area = Rect { x: inner.x, y: hint_y, width: inner.width, height: 1 };
+                Paragraph::new(hint).render(hint_area, buf);
+            }
         }
     }
 }
