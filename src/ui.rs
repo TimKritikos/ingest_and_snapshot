@@ -41,6 +41,7 @@ pub struct ApproveTransferQueryUpdate {
     pub device_product_name: String,
     pub brand: String,
     pub serial_number: String,
+    pub source_device: String,
     pub transfer_function: String,
     pub archive_directory: String,
     pub data_size: u64,

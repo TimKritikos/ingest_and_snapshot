@@ -262,11 +262,13 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let overwritten = Style::default().fg(Color::DarkGray);
     let data = &query.data;
     let size_str = super::format_bytes(data.data_size);
+
     let mut product_spans = vec![Span::styled("Product:  ", label), Span::styled(data.device_product_name.as_str(), value)];
     if data.device_overridden {
         product_spans.push(Span::styled(" (overwritten)", overwritten));
     }
-    let lines = vec![
+
+    let mut lines: Vec<Line> = vec![
         Line::from(product_spans),
         Line::from(vec![Span::styled("Brand:    ", label), Span::styled(data.brand.as_str(), value)]),
         Line::from(vec![Span::styled("Serial:   ", label), Span::styled(data.serial_number.as_str(), value)]),
@@ -279,6 +281,17 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
             Span::styled(data.card_id.as_str(), value),
         ]),
     ];
+
+    // Derive column widths from the already-built spans so the strings only appear once
+    let line_w = |l: &Line| -> usize { l.spans.iter().map(|s| s.content.len()).sum() };
+    let max_w  = lines.iter().map(line_w).max().unwrap_or(0);
+    let col0_w = line_w(&lines[0]);
+
+    const COL_GAP: usize = 3;
+    lines[0].spans.push(Span::raw(" ".repeat(max_w - col0_w + COL_GAP)));
+    lines[0].spans.push(Span::styled("Source device:  ", label));
+    lines[0].spans.push(Span::styled(data.source_device.as_str(), value));
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
