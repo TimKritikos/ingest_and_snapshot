@@ -60,9 +60,20 @@ pub struct ScanNewDeviceQuery {
     pub response_tx: Sender<bool>,
 }
 
+pub enum FatalErrorKind {
+    DevicesJson(String),
+}
+
+pub struct FatalErrorQuery {
+    pub error: FatalErrorKind,
+    pub response_tx: Sender<()>,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     ScanNewDevice(ScanNewDeviceQuery),
+    FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
+                                 //will be sent before any other message anyways so it doesn't matter
 }
 
 pub enum TransferStatus {
@@ -198,6 +209,21 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
 /// Terminal font cell aspect ratio: cells are approximately this many times taller than wide.
 /// Used to compute visually square dimensions from cell counts.
 pub const FONT_CELL_ASPECT_RATIO: u16 = 2;
+
+// Unicode braille encodes 8 dots as consecutive bit positions 0x01–0x80, but the spatial
+// layout is not top-to-bottom because braille was originally a 2×3 grid (dots 1–6) and
+// dots 7 & 8 were later appended at the bottom of each column without renumbering:
+//
+//   Left col   Right col        bit
+//    dot1        dot4       0x01  0x08
+//    dot2        dot5       0x02  0x10
+//    dot3        dot6       0x04  0x20
+//    dot7        dot8       0x40  0x80
+
+/// Bit mask for each dot row in the left braille column (rows 0–3 top to bottom).
+pub const BRAILLE_BAR_LEFT:  [u8; 4] = [0x01, 0x02, 0x04, 0x40];
+/// Bit mask for each dot row in the right braille column (rows 0–3 top to bottom).
+pub const BRAILLE_BAR_RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
 
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {

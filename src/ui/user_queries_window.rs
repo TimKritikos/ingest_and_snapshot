@@ -3,10 +3,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect, Layout, Direction, Constraint};
 use ratatui::style::{Color, Style, Modifier};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets;
-use super::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse};
+use super::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind};
 
 pub struct QueryWindowState {
     pub device_picker_open: bool,
@@ -77,6 +77,16 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::FatalError(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    if let Some(UserQuery::FatalError(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(());
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -117,6 +127,7 @@ pub fn render(
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
+        UserQuery::FatalError(query) => render_fatal_error(frame, padded, query),
     }
 }
 
@@ -293,6 +304,146 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     lines[0].spans.push(Span::styled(data.source_device.as_str(), value));
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_warning_icon(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 { return; }
+
+    let bg   = Style::default().bg(Color::Gray);
+    let icon = Style::default().bg(Color::Gray).fg(Color::Black).add_modifier(Modifier::BOLD);
+
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buf[(x, y)].set_char(' ').set_style(bg);
+        }
+    }
+
+    // Each braille cell covers 2 dot-columns × 4 dot-rows.
+    let dot_matrix_width = area.width  as usize * 2;
+    let dot_matrix_height = area.height as usize * 4;
+
+
+    // Returns true if the dot at (dot_x, dot_y) should be lit.
+    let is_active = |dot_x: usize, dot_y: usize| -> bool {
+        // Normalized coordinates, centered around 0.
+        // normalised_x: -1.0 left, +1.0 right
+        // normalised_y: -1.0 top,  +1.0 bottom
+        let normalised_x = (dot_x as f32 / ( dot_matrix_width as f32 - 1.0)) * 2.0 - 1.0;
+        let normalised_y = (dot_y as f32 / ( dot_matrix_height as f32 - 1.0)) * 2.0 - 1.0;
+
+        // Triangle vertices:
+        // top, bottom-left, bottom-right
+        let top_y = -1.0;
+        let bottom_y = 1.0;
+        let half_width = 1.0;
+
+        // Triangle gets wider as y goes down
+        let icon_y_percentage = (normalised_y - top_y) / (bottom_y - top_y);
+
+        if icon_y_percentage < 0.0 || icon_y_percentage > 1.0 {
+            return false;
+        }
+
+        let edge_x = icon_y_percentage * half_width;
+
+        // Inside triangle
+        let inside_triangle = normalised_x.abs() <= edge_x;
+
+        // Triangle outline thickness
+        let thickness_percentage = 0.12;
+
+        let on_left_edge = (normalised_x + edge_x).abs() < thickness_percentage;
+        let on_right_edge = (normalised_x - edge_x).abs() < thickness_percentage;
+        let on_bottom_edge = (normalised_y - bottom_y).abs() < thickness_percentage && normalised_x.abs() <= half_width;
+
+        let triangle_outline = inside_triangle && (on_left_edge || on_right_edge || on_bottom_edge);
+
+        // Exclamation mark
+        let stem =
+            normalised_x.abs() < 0.10 &&
+            normalised_y > -0.30 &&
+            normalised_y < 0.35;
+
+        let dot =
+            normalised_x.abs() < 0.13 &&
+            (normalised_y - 0.60).abs() < 0.11;
+
+        triangle_outline || stem || dot
+    };
+
+    // Convert each 2×4 dot cell to a braille codepoint (U+2800 + bitmask).
+    for character_y in 0..area.height {
+        for character_x in 0..area.width {
+            let dot_x = character_x as usize * 2;
+            let dot_y = character_y as usize * 4;
+            let mut braille_bits: u8 = 0;
+            for dot_row in 0..4 {
+                if is_active(dot_x,     dot_y + dot_row) { braille_bits |= super::BRAILLE_BAR_LEFT[dot_row]; }
+                if is_active(dot_x + 1, dot_y + dot_row) { braille_bits |= super::BRAILLE_BAR_RIGHT[dot_row]; }
+            }
+            if braille_bits != 0 {
+                let ch = char::from_u32(0x2800 + braille_bits as u32).unwrap_or(' ');
+                buf[(area.x + character_x, area.y + character_y)].set_char(ch).set_style(icon);
+            }
+        }
+    }
+}
+
+fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
+    let error_style  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let label_style  = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let detail_style = Style::default().fg(Color::Black);
+    let hint_style   = Style::default().fg(Color::Black);
+    let ok_style     = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+
+    // Reserve left column for graphics; fall back to full area if too narrow
+    let icon_cols = area.height * super::FONT_CELL_ASPECT_RATIO;
+    let content_area = if area.width > icon_cols + 20 {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Length(icon_cols),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        render_warning_icon(frame, cols[0]);
+        cols[2]
+    } else {
+        area
+    };
+
+    let (context, detail) = match &query.error {
+        FatalErrorKind::DevicesJson(msg) => ("Failed to load data from devices.json", msg.as_str()),
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![
+            Constraint::Length(1), // "Fatal error"
+            Constraint::Length(1), // blank
+            Constraint::Min(1),    // source + detail (both wrapped)
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // "[Enter] OK"
+        ])
+        .split(content_area);
+
+    frame.render_widget(Paragraph::new(Span::styled("Fatal error", error_style)), rows[0]);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![Span::styled("Source: ", label_style), Span::styled(context, detail_style)]),
+            Line::from(vec![Span::styled("Detail: ", label_style), Span::styled(detail, detail_style)]),
+        ]).wrap(Wrap { trim: false }),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[Enter]", ok_style),
+            Span::styled(" OK", hint_style),
+        ])),
+        rows[4],
+    );
 }
 
 fn render_scan_new_device(frame: &mut Frame, area: Rect, query: &ScanNewDeviceQuery) {

@@ -12,23 +12,12 @@ const ITEM_GAP:      u16 = 1;
 const PADDING_SIDES: u16 = 2;
 const PADDING_TOP:   u16 = 1;
 
-// Unicode braille encodes 8 dots as consecutive bit positions 0x01–0x80, but the spatial
-// layout is not top-to-bottom because braille was originally a 2×3 grid (dots 1–6) and
-// dots 7 & 8 were later appended at the bottom of each column without renumbering:
-//
-//   Left col   Right col        bit
-//    dot1        dot4       0x01  0x08
-//    dot2        dot5       0x02  0x10
-//    dot3        dot6       0x04  0x20
-//    dot7        dot8       0x40  0x80
-
-// Used to draw vertical bars of a given height. Includes all lower braille dots
+// Used to draw vertical bars of a given height. Includes all lower braille dots.
+// See ui.rs for the braille dot layout diagram.
 const BRAILLE_DOT_LEFT:  [u8; 5] = [0x00, 0x40, 0x44, 0x46, 0x47];
 const BRAILLE_DOT_RIGHT: [u8; 5] = [0x00, 0x80, 0xA0, 0xB0, 0xB8];
 
-// Used when setting specific dots independently
-const BRAILLE_BAR_LEFT:  [u8; 4] = [0x01, 0x02, 0x04, 0x40];
-const BRAILLE_BAR_RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
+use super::{BRAILLE_BAR_LEFT, BRAILLE_BAR_RIGHT};
 
 pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 

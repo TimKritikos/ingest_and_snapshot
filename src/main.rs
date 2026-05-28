@@ -39,6 +39,32 @@ use std::ffi::OsStr;
 
 mod ui;
 
+const DEVICES_JSON_EXPECTED_MAJOR: u32 = 0;
+const DEVICES_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
+
+#[derive(Deserialize)]
+struct DataStructureVersion {
+    major: u32,
+    capability_level: u32,
+}
+
+#[derive(Deserialize)]
+struct DeviceEntry {
+    names: Vec<String>,
+    bought: Option<u64>,
+    id: String,
+    exhaustive: bool,
+    manual_update: bool,
+    device_type: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct DevicesConfig {
+    data_type: String,
+    data_structure_version: DataStructureVersion,
+    devices: Vec<DeviceEntry>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
     data_type: String,
@@ -122,7 +148,7 @@ fn main() {
         process::exit(1);
     }
 
-    if is_read_only(media_dir).unwrap() {
+    if is_read_only(media_dir.clone()).unwrap() {
         eprintln!("media is mounted read-only");
         process::exit(1);
     }
@@ -134,6 +160,47 @@ fn main() {
     let ui_handle = ui::init(logic_to_ui_rx,ui_to_logic_tx);
 
     logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
+
+    let devices_config: DevicesConfig = {
+        let devices_path = media_dir.join("metadata/devices.json");
+
+        let result: Result<DevicesConfig, String> = (|| {
+            if !devices_path.exists() {
+                return Err(format!("{}: file not found",devices_path.display()));
+            }
+            let data = std::fs::read_to_string(&devices_path)
+                .map_err(|e| format!("{}: failed to read file: {}", devices_path.display(), e))?;
+            let dc = serde_json::from_str::<DevicesConfig>(&data)
+                .map_err(|e| format!("{}: failed to parse json: {}", devices_path.display(), e))?;
+            if dc.data_type != "media_devices" {
+                return Err(format!("{}: wrong data type: expected 'media_devices', found '{}'", devices_path.display(), dc.data_type));
+            }
+            if dc.data_structure_version.major != DEVICES_JSON_EXPECTED_MAJOR {
+                return Err(format!("{}: unsupported data_structure_version: major {} is not supported (expected {})",devices_path.display(), dc.data_structure_version.major, DEVICES_JSON_EXPECTED_MAJOR));
+            }
+            if dc.data_structure_version.capability_level < DEVICES_JSON_MIN_CAPABILITY_LEVEL {
+                return Err(format!("{}: unsupported data_structure_version: capability_level {} is below minimum {}",devices_path.display(), dc.data_structure_version.capability_level, DEVICES_JSON_MIN_CAPABILITY_LEVEL));
+            }
+            Ok(dc)
+        })();
+
+        match result {
+            Ok(dc) => dc,
+            Err(msg) => {
+                let (response_tx, response_rx) = mpsc::channel::<()>();
+                logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
+                    ui::UserQuery::FatalError(ui::FatalErrorQuery {
+                        error: ui::FatalErrorKind::DevicesJson(msg),
+                        response_tx,
+                    })
+                )).unwrap();
+                let _ = response_rx.recv();
+                logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+                ui_handle.join().unwrap();
+                process::exit(1);
+            }
+        }
+    };
 
     // Dummy UI data for development/testing
     #[cfg(feature = "dummy-ui-data")]
