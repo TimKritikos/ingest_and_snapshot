@@ -62,10 +62,16 @@ pub struct ScanNewDeviceQuery {
 
 pub enum FatalErrorKind {
     DevicesJson(String),
+    SourceMedia(String),
 }
 
 pub struct FatalErrorQuery {
     pub error: FatalErrorKind,
+    pub response_tx: Sender<()>,
+}
+
+pub struct SourceMediaWarningsQuery {
+    pub warnings: Vec<String>,
     pub response_tx: Sender<()>,
 }
 
@@ -74,6 +80,7 @@ pub enum UserQuery {
     ScanNewDevice(ScanNewDeviceQuery),
     FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
                                  //will be sent before any other message anyways so it doesn't matter
+    SourceMediaWarnings(SourceMediaWarningsQuery),
 }
 
 pub enum TransferStatus {

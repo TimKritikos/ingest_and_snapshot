@@ -42,6 +42,13 @@ mod ui;
 const DEVICES_JSON_EXPECTED_MAJOR: u32 = 0;
 const DEVICES_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
 
+const SOURCE_MEDIA_DIR_NAME: &str = "source_media";
+
+const SOURCE_MEDIA_CONFIG_EXPECTED_MAJOR: u32 = 0;
+const SOURCE_MEDIA_CONFIG_MIN_CAPABILITY_LEVEL: u32 = 1;
+const SOURCE_MEDIA_DATA_FILENAME: &str = "source_media_data.json";
+const EXPECTED_SOURCE_MEDIA_DATA_TYPE: &str = "source_media_config";
+
 #[derive(Deserialize)]
 struct DataStructureVersion {
     major: u32,
@@ -63,6 +70,39 @@ struct DevicesConfig {
     data_type: String,
     data_structure_version: DataStructureVersion,
     devices: Vec<DeviceEntry>,
+}
+
+#[derive(Deserialize)]
+struct SourceMediaUniqueIdentification {
+    serial_number: String,
+}
+
+#[derive(Deserialize)]
+struct SourceMediaInfo {
+    id: String,
+    device_make_name: String,
+    device_model_name: String,
+    device_model_name_pretty: Option<String>,
+    device_unique_identification: SourceMediaUniqueIdentification,
+}
+
+#[derive(Deserialize)]
+struct SourceMediaConfigHeader {
+    data_type: String,
+    data_structure_version: DataStructureVersion,
+}
+
+#[derive(Deserialize)]
+struct SourceMediaConfig {
+    source_media_info: SourceMediaInfo,
+}
+
+struct SourceMediaEntry {
+    id: String,
+    device_make_name: String,
+    device_model_name: String,
+    device_model_name_pretty: Option<String>,
+    serial_number: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -116,6 +156,101 @@ struct Cli {
 
     #[arg(short='m', long="media-dir")]
     media_dir: Option<PathBuf>,
+}
+
+fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<String>), String> {
+    let source_media_dir = media_dir.join(SOURCE_MEDIA_DIR_NAME);
+
+    if !source_media_dir.exists() {
+        return Err(format!("{}: directory not found", source_media_dir.display()));
+    }
+
+    let subdirs = match std::fs::read_dir(&source_media_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Err(format!("{}: failed to read directory: {}", source_media_dir.display(), e));
+        }
+    };
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut entries: Vec<SourceMediaEntry> = Vec::new();
+
+    for subdir_result in subdirs {
+        let subdir = match subdir_result {
+            Ok(entry) => entry,
+            Err(e) => {
+                warnings.push(format!("Failed to read item in directory {}: {}", source_media_dir.display(), e));
+                continue;
+            }
+        };
+
+        let json_path = subdir.path().join(SOURCE_MEDIA_DATA_FILENAME);
+        if !json_path.exists() {
+            continue;
+        }
+
+        let raw_json = match std::fs::read_to_string(&json_path) {
+            Ok(data) => data,
+            Err(e) => {
+                warnings.push(format!("{}: failed to read: {}", json_path.display(), e));
+                continue;
+            }
+        };
+
+        let header = match serde_json::from_str::<SourceMediaConfigHeader>(&raw_json) {
+            Ok(h) => h,
+            Err(e) => {
+                warnings.push(format!("{}: failed to parse JSON: {}", json_path.display(), e));
+                continue;
+            }
+        };
+
+        if header.data_type != EXPECTED_SOURCE_MEDIA_DATA_TYPE {
+            warnings.push(format!(
+                "{}: unexpected data_type '{}' (expected '{}')",
+                json_path.display(), header.data_type, EXPECTED_SOURCE_MEDIA_DATA_TYPE
+            ));
+            continue;
+        }
+
+        if header.data_structure_version.major != SOURCE_MEDIA_CONFIG_EXPECTED_MAJOR {
+            warnings.push(format!(
+                "{}: unsupported major version {} (expected {})",
+                json_path.display(),
+                header.data_structure_version.major,
+                SOURCE_MEDIA_CONFIG_EXPECTED_MAJOR
+            ));
+            continue;
+        }
+
+        if header.data_structure_version.capability_level < SOURCE_MEDIA_CONFIG_MIN_CAPABILITY_LEVEL {
+            warnings.push(format!(
+                "{}: capability_level {} is below minimum {}",
+                json_path.display(),
+                header.data_structure_version.capability_level,
+                SOURCE_MEDIA_CONFIG_MIN_CAPABILITY_LEVEL
+            ));
+            continue;
+        }
+
+        let config = match serde_json::from_str::<SourceMediaConfig>(&raw_json) {
+            Ok(c) => c,
+            Err(e) => {
+                warnings.push(format!("{}: failed to parse JSON: {}", json_path.display(), e));
+                continue;
+            }
+        };
+
+        entries.push(SourceMediaEntry {
+            id:                       config.source_media_info.id,
+            device_make_name:         config.source_media_info.device_make_name,
+            device_model_name:        config.source_media_info.device_model_name,
+            device_model_name_pretty: config.source_media_info.device_model_name_pretty,
+            serial_number:            config.source_media_info.device_unique_identification.serial_number,
+        });
+    }
+
+    Ok((entries, warnings))
 }
 
 fn main() {
@@ -201,6 +336,50 @@ fn main() {
             }
         }
     };
+
+    let (source_media_entries, source_media_warnings) = match scan_source_media(&media_dir) {
+        Ok(result) => result,
+        Err(msg) => {
+            let (response_tx, response_rx) = mpsc::channel::<()>();
+            logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
+                ui::UserQuery::FatalError(ui::FatalErrorQuery {
+                    error: ui::FatalErrorKind::SourceMedia(msg),
+                    response_tx,
+                })
+            )).unwrap();
+            let _ = response_rx.recv();
+            logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+            ui_handle.join().unwrap();
+            process::exit(1);
+        }
+    };
+
+    if !source_media_warnings.is_empty() {
+        let (response_tx, response_rx) = mpsc::channel::<()>();
+        logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
+            ui::UserQuery::SourceMediaWarnings(ui::SourceMediaWarningsQuery {
+                warnings: source_media_warnings,
+                response_tx,
+            })
+        )).unwrap();
+    }
+
+    if source_media_entries.is_empty() {
+        let (response_tx, response_rx) = mpsc::channel::<()>();
+        logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
+            ui::UserQuery::FatalError(ui::FatalErrorQuery {
+                error: ui::FatalErrorKind::SourceMedia(format!(
+                    "{}: no valid source media configurations found",
+                    media_dir.join(SOURCE_MEDIA_DIR_NAME).display()
+                )),
+                response_tx,
+            })
+        )).unwrap();
+        let _ = response_rx.recv();
+        logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+        ui_handle.join().unwrap();
+        process::exit(1);
+    }
 
     // Dummy UI data for development/testing
     #[cfg(feature = "dummy-ui-data")]
