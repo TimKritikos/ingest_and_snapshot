@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets;
-use super::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery};
 
 pub struct QueryWindowState {
     pub device_picker_open: bool,

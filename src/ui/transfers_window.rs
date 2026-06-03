@@ -6,6 +6,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use ratatui::buffer::Buffer;
 use super::tui_dialog_widgets;
 use super::{Transfer, TransferStatus};
+use crate::ui_api::TransferSample;
 
 const ITEM_HEIGHT:   u16 = 4; // 1 title row + 3 chart rows
 const ITEM_GAP:      u16 = 1;
@@ -156,7 +157,7 @@ impl Widget for TransferItem<'_> {
     }
 }
 
-fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[crate::ui::TransferSample], bytes_total: u64, status: &TransferStatus) {
+fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample], bytes_total: u64, status: &TransferStatus) {
 
     //Calculate usefule values
     let width  = area.width  as usize;
@@ -305,7 +306,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[crate::ui::Tran
 }
 
 //TODO: If there are enough samples withing a predefined window average those
-fn derive_current_speed(samples: &[crate::ui::TransferSample]) -> u64 {
+fn derive_current_speed(samples: &[TransferSample]) -> u64 {
     if samples.len() < 2 {
         return 0;
     }
@@ -317,7 +318,7 @@ fn derive_current_speed(samples: &[crate::ui::TransferSample]) -> u64 {
     }else{ 0 }
 }
 
-fn derive_overall_speed(samples: &[crate::ui::TransferSample]) -> u64 {
+fn derive_overall_speed(samples: &[TransferSample]) -> u64 {
     if samples.len() < 2 {
         return 0;
     }
@@ -328,7 +329,7 @@ fn derive_overall_speed(samples: &[crate::ui::TransferSample]) -> u64 {
     }else{ 0 }
 }
 
-fn derive_peak_speed(samples: &[crate::ui::TransferSample]) -> u64 {
+fn derive_peak_speed(samples: &[TransferSample]) -> u64 {
     samples.windows(2).map(|pair| {
         let time_difference_ms = pair[1].timestamp_ms.saturating_sub(pair[0].timestamp_ms);
         if time_difference_ms > 0 {

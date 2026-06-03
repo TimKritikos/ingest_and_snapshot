@@ -25,9 +25,7 @@ use std::process;
 use std::env;
 use std::fs::File;
 use std::{thread, time};
-#[cfg(feature = "dummy-ui-data")]
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::mpsc::{self, Sender, Receiver};
+use std::sync::mpsc::{self, Sender};
 use clap::Parser;
 use home::home_dir;
 use anyhow::{Result};
@@ -38,6 +36,7 @@ use udev::MonitorBuilder;
 use std::ffi::OsStr;
 
 mod ui;
+mod ui_api;
 
 const DEVICES_JSON_EXPECTED_MAJOR: u32 = 0;
 const DEVICES_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
@@ -357,7 +356,288 @@ fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<
     Ok((entries, warnings))
 }
 
+#[cfg(feature = "dummy-ui-data")]
+fn run_dummy_ui() -> ! {
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now_ms = || -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    };
+
+    let (ui_to_logic_tx, ui_to_logic_rx) = mpsc::channel::<ui_api::UiToLogicMessage>();
+    let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> =
+        Arc::new(Mutex::new(Box::new(ui::TuiBackend::new(ui_to_logic_tx))));
+
+    {
+        let ui = Arc::clone(&ui);
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_millis(300));
+
+            ui.lock().unwrap().set_available_devices(vec![
+                "Sony A7 IV".to_string(),
+                "Sony A7R V".to_string(),
+                "Canon EOS R5".to_string(),
+                "Fujifilm GFX 100S".to_string(),
+                "Nikon Z9".to_string(),
+            ]).unwrap();
+
+            // Transfer 1: historical finished transfer (simulating a restore from saved state)
+            let (tx1, rx1) = mpsc::channel::<ui_api::TransferEvent>();
+            ui.lock().unwrap().new_transfer(
+                "/dev/disk/by-id/usb-SanDisk_Ultra_USB_3.0_AA010203-0:0".to_string(),
+                "Sony A7 IV".to_string(),
+                rx1,
+            ).unwrap();
+            let total1: u64 = 4 * 1024 * 1024 * 1024;
+            let t_end = now_ms() - 5 * 60 * 1000; // finished 5 minutes ago
+            let t_start = t_end - 80 * 1000;       // took 80 seconds
+            let speed_profile: &[u64] = &[
+                15, 32, 58, 75, 88, 95, 100, 98, 105, 110,
+                108, 115, 112, 108, 102, 110, 118, 115, 108, 95,
+            ];
+            let interval_ms = (t_end - t_start) / speed_profile.len() as u64;
+            let mut bytes1: u64 = 0;
+            let samples1: Vec<ui_api::TransferSample> = speed_profile.iter().enumerate().map(|(i, &spd_mbps)| {
+                bytes1 = (bytes1 + spd_mbps * 1_000_000 * interval_ms / 1000).min(total1);
+                ui_api::TransferSample { timestamp_ms: t_start + i as u64 * interval_ms, bytes_done: bytes1 }
+            }).collect();
+            tx1.send(ui_api::TransferEvent::TransferStarted { bytes_total: total1 }).unwrap();
+            tx1.send(ui_api::TransferEvent::TransferSamples(samples1)).unwrap();
+            // No TransferFinished needed — the UI transitions to Finished when bytes_done >= bytes_total
+
+            // Transfer 4: two-phase speed test — live, visually verify x-axis is % completion.
+            // First half of data at 15 MB/s (slow), second half at 120 MB/s (fast).
+            // The left half of the chart should have short bars, right half tall bars.
+            let (tx4, rx4) = mpsc::channel::<ui_api::TransferEvent>();
+            ui.lock().unwrap().new_transfer(
+                "/dev/disk/by-id/usb-TwoPhase_SpeedTest-0:0".to_string(),
+                "Canon EOS R5".to_string(),
+                rx4,
+            ).unwrap();
+
+            // 100 MB total: 50 MB slow (~3.3 s) then 50 MB fast (~0.4 s)
+            let total4:           u64 = 100 * 1024 * 1024;
+            let slow_bps:         u64 = 15  * 1024 * 1024; // 15  MB/s
+            let fast_bps:         u64 = 120 * 1024 * 1024; // 120 MB/s
+            let bytes_per_sample: u64 = 2   * 1024 * 1024; // 2 MB per sample
+            let slow_ms:          u64 = bytes_per_sample * 1000 / slow_bps; // ~133 ms
+            let fast_ms:          u64 = bytes_per_sample * 1000 / fast_bps; //  ~17 ms
+
+            tx4.send(ui_api::TransferEvent::TransferStarted { bytes_total: total4 }).unwrap();
+            thread::spawn(move || {
+                let now_ms = || -> u64 {
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+                };
+                let mut b4: u64 = 0;
+                let half4 = total4 / 2;
+                loop {
+                    let sleep_ms = if b4 < half4 { slow_ms } else { fast_ms };
+                    thread::sleep(time::Duration::from_millis(sleep_ms));
+                    b4 = (b4 + bytes_per_sample).min(total4);
+                    if tx4.send(ui_api::TransferEvent::TransferSamples(vec![ui_api::TransferSample { timestamp_ms: now_ms(), bytes_done: b4 }])).is_err() { break; }
+                    if b4 >= total4 { break; }
+                }
+            });
+
+            // Transfer 3: live in-progress — 50 samples/sec with varied speed
+            let (tx3, rx3) = mpsc::channel::<ui_api::TransferEvent>();
+            ui.lock().unwrap().new_transfer(
+                "/dev/disk/by-id/usb-WD_Elements_25A3_CC030609-0:0".to_string(),
+                "Fujifilm GFX 100S".to_string(),
+                rx3,
+            ).unwrap();
+
+            // Total sized so the bar reaches ~85% over the demo run (visually informative)
+            let total3: u64 = 1024 * 1024 * 1024; // 1 GB
+            tx3.send(ui_api::TransferEvent::TransferStarted { bytes_total: total3 }).unwrap();
+
+            // Speed profile in MB/s; cycled at 50 Hz with noise.
+            // Ramp-up phase followed by a plateau with periodic dips, bursts, and noise.
+            let speed_profile_mbs: &[u64] = &[
+                // ramp-up (~0.5 s)
+                12, 18, 26, 36, 46, 56, 65, 72, 78, 83, 87, 90, 92, 94, 95, 96, 97, 98, 99, 100,
+                // plateau — varied (80-entry block cycled over remaining steps)
+                102, 105, 108, 112, 115, 118, 115, 112, 108, 105,
+                102, 100,  98,  95,  92,  88,  85,  82,  80,  78, // dip (buffer flush)
+                 82,  88,  92,  96, 100, 105, 110, 115, 118, 120,
+                122, 125, 128, 130, 132, 130, 128, 125, 122, 118,
+                115, 112, 108, 105, 102, 100,  98,  96,  94,  92,
+                 90,  88,  85,  82,  80,  78,  76,  74,  72,  70, // second dip
+                 75,  80,  86,  92,  98, 104, 110, 115, 118, 120,
+                122, 125, 128, 132, 135, 132, 128, 124, 120, 116,
+            ];
+
+            thread::spawn(move || {
+                let now_ms = || -> u64 {
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+                };
+                let mut bytes3: u64 = 0;
+                let mut i = 0u64;
+                loop {
+                    thread::sleep(time::Duration::from_millis(20));
+                    let base_mbs = speed_profile_mbs[i as usize % speed_profile_mbs.len()];
+                    let noise_pct = ((i * 11 + 7) % 25) as i64 - 12;
+                    let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
+                    let step_bytes = mbs * 1024 * 1024 / 50;
+                    bytes3 = (bytes3 + step_bytes).min(total3);
+                    i += 1;
+                    if tx3.send(ui_api::TransferEvent::TransferSamples(vec![ui_api::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes3 }])).is_err() { break; }
+                    if bytes3 >= total3 { break; }
+                }
+            });
+
+            // Dummy ScanNewDevice query after 10 seconds
+            let ui_scan = Arc::clone(&ui);
+            thread::spawn(move || {
+                thread::sleep(time::Duration::from_secs(10));
+                let (response_tx, response_rx) = mpsc::channel::<bool>();
+                ui_scan.lock().unwrap().user_query(ui_api::UserQuery::ScanNewDevice(ui_api::ScanNewDeviceQuery {
+                    device_name: "Unknown USB Camera".to_string(),
+                    response_tx,
+                })).unwrap();
+                let _ = response_rx.recv();
+            });
+
+            // Dummy ApproveTransfer query after 5 seconds
+            let ui_approve = Arc::clone(&ui);
+            thread::spawn(move || {
+                let now_ms = || -> u64 {
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+                };
+
+                thread::sleep(time::Duration::from_secs(5));
+
+                let (tx2, rx2) = mpsc::channel::<ui_api::TransferEvent>();
+                ui_approve.lock().unwrap().new_transfer(
+                    "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
+                    "Nikon Z9".to_string(),
+                    rx2,
+                ).unwrap();
+
+                let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
+                let (update_tx,   update_rx)   = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+
+                ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
+                    data: ui_api::ApproveTransferQueryUpdate {
+                        device_product_name: "Nikon Z9".to_string(),
+                        brand:               "Nikon".to_string(),
+                        serial_number:       "3102948576".to_string(),
+                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
+                        transfer_function:   "rsync_archive".to_string(),
+                        archive_directory:   "/media/archive/2026/05/".to_string(),
+                        data_size:           12 * 1024 * 1024 * 1024,
+                        card_id:             "NIKON_001".to_string(),
+                        device_overridden:   false,
+                    },
+                    response_tx,
+                    update_rx,
+                })).unwrap();
+
+                while let Ok(msg) = response_rx.recv() {
+                    match msg {
+                        ui_api::ApproveTransferResponse::DeviceOverwrite(name_opt) => {
+                            let update = match name_opt {
+                                Some(name) => {
+                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged(name.clone()));
+                                    ui_api::ApproveTransferQueryUpdate {
+                                        device_product_name: name,
+                                        brand:               "Unknown".to_string(),
+                                        serial_number:       "N/A".to_string(),
+                                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
+                                        transfer_function:   "rsync_archive".to_string(),
+                                        archive_directory:   "/media/archive/2026/05/".to_string(),
+                                        data_size:           12 * 1024 * 1024 * 1024,
+                                        card_id:             "UNKNOWN".to_string(),
+                                        device_overridden:   true,
+                                    }
+                                }
+                                None => {
+                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged("Nikon Z9".to_string()));
+                                    ui_api::ApproveTransferQueryUpdate {
+                                        device_product_name: "Nikon Z9".to_string(),
+                                        brand:               "Nikon".to_string(),
+                                        serial_number:       "3102948576".to_string(),
+                                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
+                                        transfer_function:   "rsync_archive".to_string(),
+                                        archive_directory:   "/media/archive/2026/05/".to_string(),
+                                        data_size:           12 * 1024 * 1024 * 1024,
+                                        card_id:             "NIKON_001".to_string(),
+                                        device_overridden:   false,
+                                    }
+                                }
+                            };
+                            let _ = update_tx.send(update);
+                        }
+                        ui_api::ApproveTransferResponse::Approved => {
+                            // Start the Nikon Z9 transfer: 500 MB, steady 40–65 MB/s
+                            let total2: u64 = 500 * 1024 * 1024;
+                            let _ = tx2.send(ui_api::TransferEvent::TransferStarted { bytes_total: total2 });
+                            thread::spawn(move || {
+                                let speed_profile_mbs: &[u64] = &[
+                                    // ramp-up
+                                     8, 15, 24, 33, 40, 44, 46, 48, 49, 50,
+                                    // steady plateau with gentle variation
+                                    51, 53, 55, 57, 58, 57, 55, 53, 51, 50,
+                                    49, 48, 47, 46, 48, 51, 54, 57, 60, 62,
+                                    63, 62, 60, 57, 54, 51, 48, 46, 48, 51,
+                                    54, 57, 60, 63, 65, 63, 60, 57, 54, 51,
+                                ];
+                                let mut bytes2: u64 = 0;
+                                let mut j = 0u64;
+                                loop {
+                                    thread::sleep(time::Duration::from_millis(20));
+                                    let base_mbs = speed_profile_mbs[j as usize % speed_profile_mbs.len()];
+                                    let noise_pct = ((j * 7 + 3) % 21) as i64 - 10;
+                                    let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
+                                    bytes2 = (bytes2 + mbs * 1024 * 1024 / 50).min(total2);
+                                    j += 1;
+                                    if tx2.send(ui_api::TransferEvent::TransferSamples(vec![ui_api::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes2 }])).is_err() { break; }
+                                    if bytes2 >= total2 { break; }
+                                }
+                            });
+                            break;
+                        }
+                        ui_api::ApproveTransferResponse::Denied => {
+                            let _ = tx2.send(ui_api::TransferEvent::DeviceUnplugged);
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    loop {
+        thread::sleep(time::Duration::from_millis(50));
+        if let Ok(ui_api::UiToLogicMessage::Quit) = ui_to_logic_rx.try_recv() {
+            ui.lock().unwrap().quit().unwrap();
+            break;
+        }
+    }
+
+    // Wait for all spawned threads to drop their Arc references, then join the UI thread
+    // so ratatui can restore the terminal before we exit.
+    loop {
+        match Arc::try_unwrap(ui) {
+            Ok(mutex) => {
+                mutex.into_inner().unwrap().join();
+                break;
+            }
+            Err(arc) => {
+                ui = arc;
+                thread::sleep(time::Duration::from_millis(10));
+            }
+        }
+    }
+    process::exit(0);
+}
+
+#[cfg_attr(feature = "dummy-ui-data", allow(unreachable_code))]
 fn main() {
+    #[cfg(feature = "dummy-ui-data")]
+    run_dummy_ui();
+
     let cli = Cli::parse();
 
     let config_file_path = match cli.config {
@@ -394,11 +674,12 @@ fn main() {
 
     let config = parse_config_file(config_file_path).unwrap();
 
-    let (logic_to_ui_tx, logic_to_ui_rx): (Sender<ui::LogicToUiMessage>, Receiver<ui::LogicToUiMessage>) = mpsc::channel();
-    let (ui_to_logic_tx, ui_to_logic_rx): (Sender<ui::UiToLogicMessage>, Receiver<ui::UiToLogicMessage>) = mpsc::channel();
-    let ui_handle = ui::init(logic_to_ui_rx,ui_to_logic_tx);
+    let (ui_to_logic_tx, ui_to_logic_rx) = mpsc::channel::<ui_api::UiToLogicMessage>();
+    let tui_backend = ui::TuiBackend::new(ui_to_logic_tx);
 
-    logic_to_ui_tx.send(ui::LogicToUiMessage::AddConfig{allow:config.allow_device_list, ignore:config.ignore_device_list}).unwrap();
+    let mut ui: Box<dyn ui_api::UiBackend> = Box::new(tui_backend);
+
+    ui.add_config(config.allow_device_list, config.ignore_device_list).unwrap();
 
     let devices_config: DevicesConfig = {
         let devices_path = media_dir.join("metadata/devices.json");
@@ -427,15 +708,13 @@ fn main() {
             Ok(dc) => dc,
             Err(msg) => {
                 let (response_tx, response_rx) = mpsc::channel::<()>();
-                logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
-                    ui::UserQuery::FatalError(ui::FatalErrorQuery {
-                        error: ui::FatalErrorKind::DevicesJson(msg),
-                        response_tx,
-                    })
-                )).unwrap();
+                ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                    error: ui_api::FatalErrorKind::DevicesJson(msg),
+                    response_tx,
+                })).unwrap();
                 let _ = response_rx.recv();
-                logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
-                ui_handle.join().unwrap();
+                ui.quit().unwrap();
+                ui.join();
                 process::exit(1);
             }
         }
@@ -445,43 +724,37 @@ fn main() {
         Ok(result) => result,
         Err(msg) => {
             let (response_tx, response_rx) = mpsc::channel::<()>();
-            logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
-                ui::UserQuery::FatalError(ui::FatalErrorQuery {
-                    error: ui::FatalErrorKind::SourceMedia(msg),
-                    response_tx,
-                })
-            )).unwrap();
+            ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                error: ui_api::FatalErrorKind::SourceMedia(msg),
+                response_tx,
+            })).unwrap();
             let _ = response_rx.recv();
-            logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
-            ui_handle.join().unwrap();
+            ui.quit().unwrap();
+            ui.join();
             process::exit(1);
         }
     };
 
     if !source_media_warnings.is_empty() {
-        let (response_tx, response_rx) = mpsc::channel::<()>();
-        logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
-            ui::UserQuery::SourceMediaWarnings(ui::SourceMediaWarningsQuery {
-                warnings: source_media_warnings,
-                response_tx,
-            })
-        )).unwrap();
+        let (response_tx, _response_rx) = mpsc::channel::<()>();
+        ui.user_query(ui_api::UserQuery::SourceMediaWarnings(ui_api::SourceMediaWarningsQuery {
+            warnings: source_media_warnings,
+            response_tx,
+        })).unwrap();
     }
 
     if source_media_entries.is_empty() {
         let (response_tx, response_rx) = mpsc::channel::<()>();
-        logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
-            ui::UserQuery::FatalError(ui::FatalErrorQuery {
-                error: ui::FatalErrorKind::SourceMedia(format!(
-                    "{}: no valid source media configurations found",
-                    media_dir.join(SOURCE_MEDIA_DIR_NAME).display()
-                )),
-                response_tx,
-            })
-        )).unwrap();
+        ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            error: ui_api::FatalErrorKind::SourceMedia(format!(
+                "{}: no valid source media configurations found",
+                media_dir.join(SOURCE_MEDIA_DIR_NAME).display()
+            )),
+            response_tx,
+        })).unwrap();
         let _ = response_rx.recv();
-        logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
-        ui_handle.join().unwrap();
+        ui.quit().unwrap();
+        ui.join();
         process::exit(1);
     }
 
@@ -489,15 +762,13 @@ fn main() {
         Ok(state) => state,
         Err(msg) => {
             let (response_tx, response_rx) = mpsc::channel::<()>();
-            logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
-                ui::UserQuery::FatalError(ui::FatalErrorQuery {
-                    error: ui::FatalErrorKind::BackupLog(msg),
-                    response_tx,
-                })
-            )).unwrap();
+            ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                error: ui_api::FatalErrorKind::BackupLog(msg),
+                response_tx,
+            })).unwrap();
             let _ = response_rx.recv();
-            logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
-            ui_handle.join().unwrap();
+            ui.quit().unwrap();
+            ui.join();
             process::exit(1);
         }
     };
@@ -515,267 +786,16 @@ fn main() {
                 // TODO: resolve camera name from sources other than source media directory matching
                 .unwrap_or_else(|| "Unknown camera".to_string());
 
-                let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui::TransferEvent>();
-                logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer {
-                    name: transfer.card_path.display().to_string(),
-                    camera_name,
-                    rx_control: transfer_event_rx,
-                }).unwrap();
-                transfer_event_tx.send(ui::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
-                transfer_event_tx.send(ui::TransferEvent::TransferSamples(vec![
-                        ui::TransferSample { timestamp_ms: 0, bytes_done: 1 },
+                let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
+                ui.new_transfer(transfer.card_path.display().to_string(), camera_name, transfer_event_rx).unwrap();
+                transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
+                transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
+                    ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 },
                 ])).unwrap();
             }
         }
         _ => {}
     }
-
-    // Dummy UI data for development/testing
-    #[cfg(feature = "dummy-ui-data")]
-    let logic_to_ui_tx_dummy = logic_to_ui_tx.clone();
-    #[cfg(feature = "dummy-ui-data")]
-    thread::spawn(move || {
-        let now_ms = || -> u64 {
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-        };
-
-        thread::sleep(time::Duration::from_millis(300));
-
-        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::SetAvailableDevices(vec![
-            "Sony A7 IV".to_string(),
-            "Sony A7R V".to_string(),
-            "Canon EOS R5".to_string(),
-            "Fujifilm GFX 100S".to_string(),
-            "Nikon Z9".to_string(),
-        ])).unwrap();
-
-        // Transfer 1: historical finished transfer (simulating a restore from saved state)
-        let (tx1, rx1) = mpsc::channel::<ui::TransferEvent>();
-        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
-            name: "/dev/disk/by-id/usb-SanDisk_Ultra_USB_3.0_AA010203-0:0".to_string(),
-            camera_name: "Sony A7 IV".to_string(),
-            rx_control: rx1,
-        }).unwrap();
-        let total1: u64 = 4 * 1024 * 1024 * 1024;
-        let t_end = now_ms() - 5 * 60 * 1000; // finished 5 minutes ago
-        let t_start = t_end - 80 * 1000;       // took 80 seconds
-        let speed_profile: &[u64] = &[
-            15, 32, 58, 75, 88, 95, 100, 98, 105, 110,
-            108, 115, 112, 108, 102, 110, 118, 115, 108, 95,
-        ];
-        let interval_ms = (t_end - t_start) / speed_profile.len() as u64;
-        let mut bytes1: u64 = 0;
-        let samples1: Vec<ui::TransferSample> = speed_profile.iter().enumerate().map(|(i, &spd_mbps)| {
-            bytes1 = (bytes1 + spd_mbps * 1_000_000 * interval_ms / 1000).min(total1);
-            ui::TransferSample { timestamp_ms: t_start + i as u64 * interval_ms, bytes_done: bytes1 }
-        }).collect();
-        tx1.send(ui::TransferEvent::TransferStarted { bytes_total: total1 }).unwrap();
-        tx1.send(ui::TransferEvent::TransferSamples(samples1)).unwrap();
-        // No TransferFinished needed — the UI transitions to Finished when bytes_done >= bytes_total
-
-        // Transfer 4: two-phase speed test — live, visually verify x-axis is % completion.
-        // First half of data at 15 MB/s (slow), second half at 120 MB/s (fast).
-        // The left half of the chart should have short bars, right half tall bars.
-        let (tx4, rx4) = mpsc::channel::<ui::TransferEvent>();
-        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
-            name: "/dev/disk/by-id/usb-TwoPhase_SpeedTest-0:0".to_string(),
-            camera_name: "Canon EOS R5".to_string(),
-            rx_control: rx4,
-        }).unwrap();
-
-        // 100 MB total: 50 MB slow (~3.3 s) then 50 MB fast (~0.4 s)
-        let total4:          u64 = 100 * 1024 * 1024;
-        let slow_bps:        u64 = 15  * 1024 * 1024; // 15  MB/s
-        let fast_bps:        u64 = 120 * 1024 * 1024; // 120 MB/s
-        let bytes_per_sample: u64 = 2 * 1024 * 1024;  // 2 MB per sample
-        let slow_ms:         u64 = bytes_per_sample * 1000 / slow_bps; // ~133 ms
-        let fast_ms:         u64 = bytes_per_sample * 1000 / fast_bps; //  ~17 ms
-
-        tx4.send(ui::TransferEvent::TransferStarted { bytes_total: total4 }).unwrap();
-        thread::spawn(move || {
-            let now_ms = || -> u64 {
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-            };
-            let mut b4: u64 = 0;
-            let half4 = total4 / 2;
-            loop {
-                let sleep_ms = if b4 < half4 { slow_ms } else { fast_ms };
-                thread::sleep(time::Duration::from_millis(sleep_ms));
-                b4 = (b4 + bytes_per_sample).min(total4);
-                if tx4.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: b4 }])).is_err() { break; }
-                if b4 >= total4 { break; }
-            }
-        });
-
-        // Transfer 3: live in-progress — 50 samples/sec with varied speed
-        let (tx3, rx3) = mpsc::channel::<ui::TransferEvent>();
-        logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
-            name: "/dev/disk/by-id/usb-WD_Elements_25A3_CC030609-0:0".to_string(),
-            camera_name: "Fujifilm GFX 100S".to_string(),
-            rx_control: rx3,
-        }).unwrap();
-
-        // Total sized so the bar reaches ~85% over the demo run (visually informative)
-        let total3: u64 = 1024 * 1024 * 1024; // 1 GB
-        tx3.send(ui::TransferEvent::TransferStarted { bytes_total: total3 }).unwrap();
-
-        // Speed profile in MB/s; cycled at 50 Hz with noise.
-        // Ramp-up phase followed by a plateau with periodic dips, bursts, and noise.
-        let speed_profile_mbs: &[u64] = &[
-            // ramp-up (~0.5 s)
-            12, 18, 26, 36, 46, 56, 65, 72, 78, 83, 87, 90, 92, 94, 95, 96, 97, 98, 99, 100,
-            // plateau — varied (80-entry block cycled over remaining steps)
-            102, 105, 108, 112, 115, 118, 115, 112, 108, 105,
-            102, 100,  98,  95,  92,  88,  85,  82,  80,  78, // dip (buffer flush)
-             82,  88,  92,  96, 100, 105, 110, 115, 118, 120,
-            122, 125, 128, 130, 132, 130, 128, 125, 122, 118,
-            115, 112, 108, 105, 102, 100,  98,  96,  94,  92,
-             90,  88,  85,  82,  80,  78,  76,  74,  72,  70, // second dip
-             75,  80,  86,  92,  98, 104, 110, 115, 118, 120,
-            122, 125, 128, 132, 135, 132, 128, 124, 120, 116,
-        ];
-
-        thread::spawn(move || {
-            let now_ms = || -> u64 {
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-            };
-            let mut bytes3: u64 = 0;
-            let mut i = 0u64;
-            loop {
-                thread::sleep(time::Duration::from_millis(20));
-                let base_mbs = speed_profile_mbs[i as usize % speed_profile_mbs.len()];
-                let noise_pct = ((i * 11 + 7) % 25) as i64 - 12;
-                let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
-                let step_bytes = mbs * 1024 * 1024 / 50;
-                bytes3 = (bytes3 + step_bytes).min(total3);
-                i += 1;
-                if tx3.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes3 }])).is_err() { break; }
-                if bytes3 >= total3 { break; }
-            }
-        });
-
-        // Dummy ScanNewDevice query after 10 seconds
-        let logic_to_ui_tx_dummy2 = logic_to_ui_tx_dummy.clone();
-        thread::spawn(move || {
-            thread::sleep(time::Duration::from_secs(10));
-            let (response_tx, response_rx) = mpsc::channel::<bool>();
-            logic_to_ui_tx_dummy2.send(ui::LogicToUiMessage::UserQuery(
-                ui::UserQuery::ScanNewDevice(ui::ScanNewDeviceQuery {
-                    device_name: "Unknown USB Camera".to_string(),
-                    response_tx,
-                })
-            )).unwrap();
-            let _ = response_rx.recv();
-        });
-
-        // Create Dummy query after 5 seconds
-        thread::spawn(move || {
-            let now_ms = || -> u64 {
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-            };
-
-            thread::sleep(time::Duration::from_secs(5));
-
-            let (tx2, rx2) = mpsc::channel::<ui::TransferEvent>();
-            logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::NewTransfer {
-                name:        "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
-                camera_name: "Nikon Z9".to_string(),
-                rx_control:  rx2,
-            }).unwrap();
-
-            let (response_tx, response_rx) = mpsc::channel::<ui::ApproveTransferResponse>();
-            let (update_tx,   update_rx)   = mpsc::channel::<ui::ApproveTransferQueryUpdate>();
-
-            logic_to_ui_tx_dummy.send(ui::LogicToUiMessage::UserQuery(
-                ui::UserQuery::ApproveTransfer(ui::ApproveTransferQuery {
-                    data: ui::ApproveTransferQueryUpdate {
-                        device_product_name: "Nikon Z9".to_string(),
-                        brand:               "Nikon".to_string(),
-                        serial_number:       "3102948576".to_string(),
-                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                        transfer_function:   "rsync_archive".to_string(),
-                        archive_directory:   "/media/archive/2026/05/".to_string(),
-                        data_size:           12 * 1024 * 1024 * 1024,
-                        card_id:             "NIKON_001".to_string(),
-                        device_overridden:   false,
-                    },
-                    response_tx,
-                    update_rx,
-                })
-            )).unwrap();
-
-            while let Ok(msg) = response_rx.recv() {
-                match msg {
-                    ui::ApproveTransferResponse::DeviceOverwrite(name_opt) => {
-                        let update = match name_opt {
-                            Some(name) => {
-                                let _ = tx2.send(ui::TransferEvent::CameraNameChanged(name.clone()));
-                                ui::ApproveTransferQueryUpdate {
-                                    device_product_name: name,
-                                    brand:               "Unknown".to_string(),
-                                    serial_number:       "N/A".to_string(),
-                                    source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                    transfer_function:   "rsync_archive".to_string(),
-                                    archive_directory:   "/media/archive/2026/05/".to_string(),
-                                    data_size:           12 * 1024 * 1024 * 1024,
-                                    card_id:             "UNKNOWN".to_string(),
-                                    device_overridden:   true,
-                                }
-                            }
-                            None => {
-                                let _ = tx2.send(ui::TransferEvent::CameraNameChanged("Nikon Z9".to_string()));
-                                ui::ApproveTransferQueryUpdate {
-                                    device_product_name: "Nikon Z9".to_string(),
-                                    brand:               "Nikon".to_string(),
-                                    serial_number:       "3102948576".to_string(),
-                                    source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                    transfer_function:   "rsync_archive".to_string(),
-                                    archive_directory:   "/media/archive/2026/05/".to_string(),
-                                    data_size:           12 * 1024 * 1024 * 1024,
-                                    card_id:             "NIKON_001".to_string(),
-                                    device_overridden:   false,
-                                }
-                            }
-                        };
-                        let _ = update_tx.send(update);
-                    }
-                    ui::ApproveTransferResponse::Approved => {
-                        // Start the Nikon Z9 transfer: 500 MB, steady 40–65 MB/s
-                        let total2: u64 = 500 * 1024 * 1024;
-                        let _ = tx2.send(ui::TransferEvent::TransferStarted { bytes_total: total2 });
-                        thread::spawn(move || {
-                            let speed_profile_mbs: &[u64] = &[
-                                // ramp-up
-                                 8, 15, 24, 33, 40, 44, 46, 48, 49, 50,
-                                // steady plateau with gentle variation
-                                51, 53, 55, 57, 58, 57, 55, 53, 51, 50,
-                                49, 48, 47, 46, 48, 51, 54, 57, 60, 62,
-                                63, 62, 60, 57, 54, 51, 48, 46, 48, 51,
-                                54, 57, 60, 63, 65, 63, 60, 57, 54, 51,
-                            ];
-                            let mut bytes2: u64 = 0;
-                            let mut j = 0u64;
-                            loop {
-                                thread::sleep(time::Duration::from_millis(20));
-                                let base_mbs = speed_profile_mbs[j as usize % speed_profile_mbs.len()];
-                                let noise_pct = ((j * 7 + 3) % 21) as i64 - 10;
-                                let mbs = ((base_mbs as i64 + base_mbs as i64 * noise_pct / 100).max(5)) as u64;
-                                bytes2 = (bytes2 + mbs * 1024 * 1024 / 50).min(total2);
-                                j += 1;
-                                if tx2.send(ui::TransferEvent::TransferSamples(vec![ui::TransferSample { timestamp_ms: now_ms(), bytes_done: bytes2 }])).is_err() { break; }
-                                if bytes2 >= total2 { break; }
-                            }
-                        });
-                        break;
-                    }
-                    ui::ApproveTransferResponse::Denied => {
-                        let _ = tx2.send(ui::TransferEvent::DeviceUnplugged);
-                        break;
-                    }
-                }
-            }
-        });
-    });
 
     let monitor = MonitorBuilder::new()
         .unwrap()
@@ -784,14 +804,14 @@ fn main() {
         .listen()
         .unwrap();
 
-    let mut device_senders: HashMap<String, Sender<ui::TransferEvent>> = HashMap::new();
+    let mut device_senders: HashMap<String, Sender<ui_api::TransferEvent>> = HashMap::new();
 
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
-                ui::UiToLogicMessage::Quit => {
-                    logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+                ui_api::UiToLogicMessage::Quit => {
+                    ui.quit().unwrap();
                     break 'outer;
                 },
             }
@@ -805,19 +825,19 @@ fn main() {
                 let links = devlinks.to_string_lossy();
                 for link in links.split_whitespace() {
                     if link.contains("/dev/disk/by-id/") {
-                        let (tx_control, rx_control) = mpsc::channel::<ui::TransferEvent>();
+                        let (tx_control, rx_control) = mpsc::channel::<ui_api::TransferEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
-                        logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer{name: link.to_string(), camera_name: String::new(), rx_control}).unwrap();
+                        ui.new_transfer(link.to_string(), String::new(), rx_control).unwrap();
                         break;
                     }
                 }
             } else if device.action() == Some(OsStr::new("remove")) {
                 if let Some(tx_control) = device_senders.remove(&syspath) {
-                    let _ = tx_control.send(ui::TransferEvent::DeviceUnplugged);
+                    let _ = tx_control.send(ui_api::TransferEvent::DeviceUnplugged);
                 }
             }
         }
     }
-    ui_handle.join().unwrap();
+    ui.join();
 
 }

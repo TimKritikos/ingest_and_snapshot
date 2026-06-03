@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 use std::thread;
+use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use ratatui::DefaultTerminal;
@@ -18,88 +19,27 @@ mod user_queries_window;
 mod user_actions_window;
 
 use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
+use crate::ui_api::{
+    TransferSample, TransferEvent, UserQuery, UiToLogicMessage, UiError,
+};
+use crate::ui_api::UiBackend;
 
-pub struct TransferSample {
-    pub timestamp_ms: u64,
-    pub bytes_done: u64,
-}
-
-pub enum TransferEvent {
-    DeviceUnplugged,
-    CameraNameChanged(String),
-    TransferStarted { bytes_total: u64 },
-    TransferSamples(Vec<TransferSample>),
-}
-
-pub enum ApproveTransferResponse {
-    Approved,
-    Denied,
-    DeviceOverwrite(Option<String>),
-}
-
-pub struct ApproveTransferQueryUpdate {
-    pub device_product_name: String,
-    pub brand: String,
-    pub serial_number: String,
-    pub source_device: String,
-    pub transfer_function: String,
-    pub archive_directory: String,
-    pub data_size: u64,
-    pub card_id: String,
-    pub device_overridden: bool,
-}
-
-pub struct ApproveTransferQuery {
-    pub data: ApproveTransferQueryUpdate,
-    pub response_tx: Sender<ApproveTransferResponse>,
-    pub update_rx: Receiver<ApproveTransferQueryUpdate>,
-}
-
-pub struct ScanNewDeviceQuery {
-    pub device_name: String,
-    pub response_tx: Sender<bool>,
-}
-
-pub enum FatalErrorKind {
-    DevicesJson(String),
-    SourceMedia(String),
-    BackupLog(String),
-}
-
-pub struct FatalErrorQuery {
-    pub error: FatalErrorKind,
-    pub response_tx: Sender<()>,
-}
-
-pub struct SourceMediaWarningsQuery {
-    pub warnings: Vec<String>,
-    pub response_tx: Sender<()>,
-}
-
-pub enum UserQuery {
-    ApproveTransfer(ApproveTransferQuery),
-    ScanNewDevice(ScanNewDeviceQuery),
-    FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
-                                 //will be sent before any other message anyways so it doesn't matter
-    SourceMediaWarnings(SourceMediaWarningsQuery),
-}
-
-pub enum TransferStatus {
+enum TransferStatus {
     NotStarted,
     InProgress,
     Finished,
 }
 
-pub struct Transfer {
-    pub name: String,
-    pub camera_name: String,
-    pub bytes_total: u64,
-    pub samples: Vec<TransferSample>,
-    pub status: TransferStatus,
-    pub rx_control: Receiver<TransferEvent>,
+struct Transfer {
+    name: String,
+    camera_name: String,
+    bytes_total: u64,
+    samples: Vec<TransferSample>,
+    status: TransferStatus,
+    rx_control: Receiver<TransferEvent>,
 }
 
-pub enum LogicToUiMessage {
+enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
     SetAvailableDevices(Vec<String>),
     NewTransfer { name: String, camera_name: String, rx_control: Receiver<TransferEvent> },
@@ -107,15 +47,42 @@ pub enum LogicToUiMessage {
     Quit,
 }
 
-pub enum UiToLogicMessage {
-    Quit,
+/// Handle to the TUI backend. Owns the channel sender and the UI thread join handle.
+pub struct TuiBackend {
+    tx: Sender<LogicToUiMessage>,
+    handle: JoinHandle<()>,
 }
 
-pub fn init(rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> JoinHandle<()> {
-    color_eyre::install().unwrap();
-    thread::spawn(|| {
-        ratatui::run(|terminal| { app(terminal, rx, tx) }).unwrap();
-    })
+impl TuiBackend {
+    pub fn new(ui_to_logic_tx: Sender<UiToLogicMessage>) -> TuiBackend {
+        let (tx, rx) = mpsc::channel::<LogicToUiMessage>();
+        color_eyre::install().unwrap();
+        let handle = thread::spawn(|| {
+            ratatui::run(|terminal| { app(terminal, rx, ui_to_logic_tx) }).unwrap();
+        });
+        TuiBackend { tx, handle }
+    }
+}
+
+impl UiBackend for TuiBackend {
+    fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::AddConfig { allow, ignore }).map_err(|_| UiError::Disconnected)
+    }
+    fn set_available_devices(&mut self, devices: Vec<String>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::SetAvailableDevices(devices)).map_err(|_| UiError::Disconnected)
+    }
+    fn new_transfer(&mut self, name: String, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::NewTransfer { name, camera_name, rx_control }).map_err(|_| UiError::Disconnected)
+    }
+    fn user_query(&mut self, query: UserQuery) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::UserQuery(query)).map_err(|_| UiError::Disconnected)
+    }
+    fn quit(&mut self) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::Quit).map_err(|_| UiError::Disconnected)
+    }
+    fn join(self: Box<Self>) {
+        self.handle.join().unwrap();
+    }
 }
 
 fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sender<UiToLogicMessage>) -> std::io::Result<()> {
