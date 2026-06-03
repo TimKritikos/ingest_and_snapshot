@@ -407,6 +407,7 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
     let (context, detail) = match &query.error {
         FatalErrorKind::DevicesJson(msg) => ("Failed to load data from devices.json", msg.as_str()),
         FatalErrorKind::SourceMedia(msg) => ("Failed to load source media configurations", msg.as_str()),
+        FatalErrorKind::BackupLog(msg)   => ("Failed to load backup log", msg.as_str()),
     };
 
     let rows = Layout::default()

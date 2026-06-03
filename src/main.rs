@@ -49,7 +49,12 @@ const SOURCE_MEDIA_CONFIG_MIN_CAPABILITY_LEVEL: u32 = 1;
 const SOURCE_MEDIA_DATA_FILENAME: &str = "source_media_data.json";
 const EXPECTED_SOURCE_MEDIA_DATA_TYPE: &str = "source_media_config";
 
-#[derive(Deserialize)]
+const BACKUP_LOG_DATA_DIR_NAME: &str = "backup_log_data";
+const EXPECTED_BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
+const BACKUP_LOG_JSON_EXPECTED_MAJOR: u32 = 0;
+const BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
+
+#[derive(Deserialize, Serialize)]
 struct DataStructureVersion {
     major: u32,
     capability_level: u32,
@@ -103,6 +108,36 @@ struct SourceMediaEntry {
     device_model_name: String,
     device_model_name_pretty: Option<String>,
     serial_number: String,
+    directory: PathBuf, // The directory from which this source media configuration was loaded.
+}
+
+// backup logs files
+
+#[derive(Deserialize)]
+struct BackupLogHeader {
+    data_type: String,
+    data_structure_version: DataStructureVersion,
+}
+
+#[derive(Deserialize)]
+struct BackupLogEntry {
+    previous_uuidv7: Option<String>,
+    current_uuidv7: String,
+    next_uuidv7: Option<String>,
+    comment: Option<String>,
+    completed_backup: bool,
+    new_transfers: Vec<BackupLogTransfer>,
+}
+
+#[derive(Deserialize)]
+struct BackupLogTransfer {
+    card_path: PathBuf,
+    medium_uuidv7: Option<String>,
+}
+
+enum BackupLogState {
+    UseExistingEntry(BackupLogEntry),
+    CreateNewEntry { previous_uuidv7: Option<String> },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -156,6 +191,74 @@ struct Cli {
 
     #[arg(short='m', long="media-dir")]
     media_dir: Option<PathBuf>,
+}
+
+fn parse_backup_log_file(path: &PathBuf) -> Result<BackupLogEntry, String> {
+    let raw_json = std::fs::read_to_string(path)
+        .map_err(|e| format!("{}: failed to read: {}", path.display(), e))?;
+
+    let header = serde_json::from_str::<BackupLogHeader>(&raw_json)
+        .map_err(|e| format!("{}: failed to parse JSON: {}", path.display(), e))?;
+
+    if header.data_type != EXPECTED_BACKUP_LOG_DATA_TYPE {
+        return Err(format!("{}: unexpected data_type '{}' (expected '{}')",
+            path.display(), header.data_type, EXPECTED_BACKUP_LOG_DATA_TYPE));
+    }
+    if header.data_structure_version.major != BACKUP_LOG_JSON_EXPECTED_MAJOR {
+        return Err(format!(
+            "{}: unsupported data_structure_version: major {} is not supported (expected {})",
+            path.display(), header.data_structure_version.major, BACKUP_LOG_JSON_EXPECTED_MAJOR
+        ));
+    }
+    if header.data_structure_version.capability_level < BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL {
+        return Err(format!(
+            "{}: unsupported data_structure_version: capability_level {} is below minimum {}",
+            path.display(), header.data_structure_version.capability_level, BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL
+        ));
+    }
+
+    serde_json::from_str::<BackupLogEntry>(&raw_json)
+        .map_err(|e| format!("{}: failed to parse entry: {}", path.display(), e))
+}
+
+fn load_backup_log(media_dir: &PathBuf) -> Result<BackupLogState, String> {
+    let log_dir = media_dir.join("metadata").join(BACKUP_LOG_DATA_DIR_NAME);
+
+    if !log_dir.exists() {
+        return Err(format!("{}: directory not found", log_dir.display()));
+    }
+
+    let dir_entries = std::fs::read_dir(&log_dir)
+        .map_err(|e| format!("{}: failed to read directory: {}", log_dir.display(), e))?;
+
+    let mut filenames: Vec<String> = dir_entries
+        .map(|entry_result| {
+            entry_result
+                .map_err(|e| format!("Failed to read item in directory {}: {}", log_dir.display(), e))
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if filenames.is_empty() {
+        return Ok(BackupLogState::CreateNewEntry { previous_uuidv7: None });
+    }
+
+    filenames.sort();
+
+    let last_filename = filenames.last().unwrap();
+    let mut current_path = log_dir.join(last_filename);
+    let mut entry = parse_backup_log_file(&current_path)?;
+
+    while let Some(ref next_uuid) = entry.next_uuidv7.clone() {
+        current_path = log_dir.join(format!("{}.json", next_uuid));
+        entry = parse_backup_log_file(&current_path)?;
+    }
+
+    if entry.completed_backup {
+        Ok(BackupLogState::CreateNewEntry { previous_uuidv7: Some(entry.current_uuidv7) })
+    } else {
+        Ok(BackupLogState::UseExistingEntry(entry))
+    }
 }
 
 fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<String>), String> {
@@ -247,6 +350,7 @@ fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<
             device_model_name:        config.source_media_info.device_model_name,
             device_model_name_pretty: config.source_media_info.device_model_name_pretty,
             serial_number:            config.source_media_info.device_unique_identification.serial_number,
+            directory:                subdir.path(),
         });
     }
 
@@ -379,6 +483,51 @@ fn main() {
         logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
         ui_handle.join().unwrap();
         process::exit(1);
+    }
+
+    let backup_log_state = match load_backup_log(&media_dir) {
+        Ok(state) => state,
+        Err(msg) => {
+            let (response_tx, response_rx) = mpsc::channel::<()>();
+            logic_to_ui_tx.send(ui::LogicToUiMessage::UserQuery(
+                ui::UserQuery::FatalError(ui::FatalErrorQuery {
+                    error: ui::FatalErrorKind::BackupLog(msg),
+                    response_tx,
+                })
+            )).unwrap();
+            let _ = response_rx.recv();
+            logic_to_ui_tx.send(ui::LogicToUiMessage::Quit).unwrap();
+            ui_handle.join().unwrap();
+            process::exit(1);
+        }
+    };
+    match backup_log_state {
+        BackupLogState::UseExistingEntry(entry) => {
+            for transfer in entry.new_transfers {
+                let camera_name = source_media_entries
+                    .iter()
+                    .find(|sme| media_dir.join(&transfer.card_path).starts_with(&sme.directory))
+                    .map(|sme| {
+                        let model = sme.device_model_name_pretty.as_deref()
+                            .unwrap_or(&sme.device_model_name);
+                        format!("{} {} (SN: {})", sme.device_make_name, model, sme.serial_number)
+                    })
+                // TODO: resolve camera name from sources other than source media directory matching
+                .unwrap_or_else(|| "Unknown camera".to_string());
+
+                let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui::TransferEvent>();
+                logic_to_ui_tx.send(ui::LogicToUiMessage::NewTransfer {
+                    name: transfer.card_path.display().to_string(),
+                    camera_name,
+                    rx_control: transfer_event_rx,
+                }).unwrap();
+                transfer_event_tx.send(ui::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
+                transfer_event_tx.send(ui::TransferEvent::TransferSamples(vec![
+                        ui::TransferSample { timestamp_ms: 0, bytes_done: 1 },
+                ])).unwrap();
+            }
+        }
+        _ => {}
     }
 
     // Dummy UI data for development/testing

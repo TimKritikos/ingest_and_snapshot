@@ -63,6 +63,7 @@ pub struct ScanNewDeviceQuery {
 pub enum FatalErrorKind {
     DevicesJson(String),
     SourceMedia(String),
+    BackupLog(String),
 }
 
 pub struct FatalErrorQuery {
