@@ -100,7 +100,7 @@ pub enum UiError {
 /// The interface through which the main logic communicates with any UI backend.
 pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
-    fn set_available_devices(&mut self, devices: Vec<String>) -> Result<(), UiError>;
+    fn set_available_devices(&mut self, devices: Vec<crate::SourceMediaEntry>) -> Result<(), UiError>;
     fn new_transfer(&mut self, name: String, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
     fn user_query(&mut self, query: UserQuery) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;

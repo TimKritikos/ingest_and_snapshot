@@ -103,6 +103,7 @@ struct SourceMediaConfig {
     source_media_info: SourceMediaInfo,
 }
 
+#[derive(Clone)]
 struct SourceMediaEntry {
     id: String,
     device_make_name: String,
@@ -482,6 +483,8 @@ fn main() {
         ui.join();
         process::exit(1);
     }
+
+    ui.set_available_devices(source_media_entries.clone()).unwrap();
 
     let backup_log_state = match load_backup_log(&media_dir) {
         Ok(state) => state,

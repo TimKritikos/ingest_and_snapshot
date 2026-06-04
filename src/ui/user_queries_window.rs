@@ -8,11 +8,12 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets;
 use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery};
+use crate::SourceMediaEntry;
 
 pub struct QueryWindowState {
     pub device_picker_open: bool,
     pub device_picker_selection: usize,
-    pub device_override: Option<String>,
+    pub device_override: Option<SourceMediaEntry>,
 }
 
 impl QueryWindowState {
@@ -21,7 +22,7 @@ impl QueryWindowState {
     }
 }
 
-pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[String]>) {
+pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
     match query_queue.front() {
         Some(UserQuery::ApproveTransfer(query)) => {
             if state.device_picker_open {
@@ -35,7 +36,8 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                             state.device_override = None;
                         } else {
                             let picked = available_devices.and_then(|d| d.get(state.device_picker_selection - 1)).cloned();
-                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(picked.clone()));
+                            let directory = picked.as_ref().map(|e| e.directory.to_string_lossy().into_owned());
+                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(directory));
                             state.device_override = picked;
                         }
                         state.device_picker_open = false;
@@ -109,7 +111,7 @@ pub fn render(
     query: &UserQuery,
     queued_count: usize,
     state: &QueryWindowState,
-    available_devices: Option<&[String]>,
+    available_devices: Option<&[SourceMediaEntry]>,
 ) {
     let title = if queued_count > 0 {
         format!("User query  [{} more queued]", queued_count)
@@ -132,9 +134,9 @@ pub fn render(
 
     match query {
         UserQuery::ApproveTransfer(query) => {
-            render_approve_transfer(frame, padded, query, state.device_override.as_deref());
+            render_approve_transfer(frame, padded, query, state.device_override.as_ref());
             if state.device_picker_open {
-                render_device_picker(frame, available_devices, state.device_override.as_deref(), state.device_picker_selection);
+                render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
@@ -143,7 +145,7 @@ pub fn render(
     }
 }
 
-fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, device_override: Option<&str>) {
+fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, device_override: Option<&SourceMediaEntry>) {
     let icon_cols = area.height * super::FONT_CELL_ASPECT_RATIO;
     let least_characters_for_text = 20 ; //TODO: I made this number up
 
@@ -183,15 +185,19 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     let selected_style = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
     let none_style     = Style::default().fg(Color::DarkGray);
 
-    let (override_span, override_style) = match device_override {
-        Some(name) => (name, selected_style),
-        None       => ("none selected", none_style),
+    let (override_text, override_style) = match device_override {
+        Some(entry) => {
+            let name = entry.device_model_name_pretty.as_deref()
+                .unwrap_or(&entry.device_model_name);
+            (name.to_owned(), selected_style)
+        },
+        None => ("none selected".to_owned(), none_style),
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("[O]", key_style),
             Span::styled(" Override device:  ", label_style),
-            Span::styled(override_span, override_style),
+            Span::styled(override_text, override_style),
         ])),
         rows[2],
     );
@@ -210,7 +216,7 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     );
 }
 
-fn render_device_picker(frame: &mut Frame, available_devices: Option<&[String]>, device_override: Option<&str>, selection: usize) {
+fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMediaEntry]>, device_override: Option<&SourceMediaEntry>, selection: usize) {
     let hint = {
         let hint = Style::default().fg(Color::Black);
         let ok   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
@@ -224,16 +230,24 @@ fn render_device_picker(frame: &mut Frame, available_devices: Option<&[String]>,
     };
 
     let mut items = vec![
-        tui_dialog_widgets::DialogFloatingListItem { label: "Auto-detected", is_current: device_override.is_none() },
+        tui_dialog_widgets::DialogFloatingListItem { label: "Auto-detected".to_string(), is_current: device_override.is_none() },
     ];
     match available_devices {
         None => items.push(tui_dialog_widgets::DialogFloatingListItem {
-            label: "Loading available devices...",
+            label: "Loading available devices...".to_string(),
             is_current: false,
         }),
-        Some(devices) => items.extend(devices.iter().map(|d| tui_dialog_widgets::DialogFloatingListItem {
-            label: d.as_str(),
-            is_current: device_override == Some(d.as_str()),
+        Some(devices) => items.extend(devices.iter().map(|d| {
+            let model = d.device_model_name_pretty.as_deref()
+                .unwrap_or(&d.device_model_name);
+            let display_name = format!("{} {} (SN: {})", d.device_make_name, model, d.serial_number);
+            let is_selected = device_override
+                .map(|ov| ov.directory == d.directory)
+                .unwrap_or(false);
+            tui_dialog_widgets::DialogFloatingListItem {
+                label: display_name,
+                is_current: is_selected,
+            }
         })),
     }
 

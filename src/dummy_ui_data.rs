@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time, process};
 use crate::ui_api;
 use crate::ui::TuiBackend;
+use crate::SourceMediaEntry;
 
 pub fn run() -> ! {
     let now_ms = || -> u64 {
@@ -19,13 +21,49 @@ pub fn run() -> ! {
         thread::spawn(move || {
             thread::sleep(time::Duration::from_millis(300));
 
-            ui.lock().unwrap().set_available_devices(vec![
-                "Sony A7 IV".to_string(),
-                "Sony A7R V".to_string(),
-                "Canon EOS R5".to_string(),
-                "Fujifilm GFX 100S".to_string(),
-                "Nikon Z9".to_string(),
-            ]).unwrap();
+            let dummy_source_media = vec![
+                SourceMediaEntry {
+                    id:                       "sony_a7iv".to_string(),
+                    device_make_name:         "Sony".to_string(),
+                    device_model_name:        "ILCE-7M4".to_string(),
+                    device_model_name_pretty: Some("A7 IV".to_string()),
+                    serial_number:            "4710293".to_string(),
+                    directory:                PathBuf::from("/media/source_media/sony_a7iv"),
+                },
+                SourceMediaEntry {
+                    id:                       "sony_a7rv".to_string(),
+                    device_make_name:         "Sony".to_string(),
+                    device_model_name:        "ILCE-7RM5".to_string(),
+                    device_model_name_pretty: Some("A7R V".to_string()),
+                    serial_number:            "8823015".to_string(),
+                    directory:                PathBuf::from("/media/source_media/sony_a7rv"),
+                },
+                SourceMediaEntry {
+                    id:                       "canon_eos_r5".to_string(),
+                    device_make_name:         "Canon".to_string(),
+                    device_model_name:        "EOS R5".to_string(),
+                    device_model_name_pretty: None,
+                    serial_number:            "083059002910".to_string(),
+                    directory:                PathBuf::from("/media/source_media/canon_eos_r5"),
+                },
+                SourceMediaEntry {
+                    id:                       "fujifilm_gfx100s".to_string(),
+                    device_make_name:         "Fujifilm".to_string(),
+                    device_model_name:        "GFX 100S".to_string(),
+                    device_model_name_pretty: None,
+                    serial_number:            "91007345".to_string(),
+                    directory:                PathBuf::from("/media/source_media/fujifilm_gfx100s"),
+                },
+                SourceMediaEntry {
+                    id:                       "nikon_z9".to_string(),
+                    device_make_name:         "Nikon".to_string(),
+                    device_model_name:        "Z 9".to_string(),
+                    device_model_name_pretty: Some("Z9".to_string()),
+                    serial_number:            "3102948576".to_string(),
+                    directory:                PathBuf::from("/media/source_media/nikon_z9"),
+                },
+            ];
+            ui.lock().unwrap().set_available_devices(dummy_source_media.clone()).unwrap();
 
             // Transfer 1: historical finished transfer (simulating a restore from saved state)
             let (tx1, rx1) = mpsc::channel::<ui_api::TransferEvent>();
@@ -181,14 +219,21 @@ pub fn run() -> ! {
 
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
-                        ui_api::ApproveTransferResponse::DeviceOverwrite(name_opt) => {
-                            let update = match name_opt {
-                                Some(name) => {
-                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged(name.clone()));
+                        ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
+                            let update = match directory_opt {
+                                Some(directory) => {
+                                    // Look up the entry by its directory (unique ID)
+                                    let entry = dummy_source_media.iter()
+                                        .find(|e| e.directory.to_string_lossy() == directory.as_str())
+                                        .expect("DeviceOverwrite returned a directory not in the known list");
+                                    let model = entry.device_model_name_pretty.as_deref()
+                                        .unwrap_or(&entry.device_model_name);
+                                    let display_name = format!("{} {}", entry.device_make_name, model);
+                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged(display_name.clone()));
                                     ui_api::ApproveTransferQueryUpdate {
-                                        device_product_name: name,
-                                        brand:               "Unknown".to_string(),
-                                        serial_number:       "N/A".to_string(),
+                                        device_product_name: display_name,
+                                        brand:               entry.device_make_name.clone(),
+                                        serial_number:       entry.serial_number.clone(),
                                         source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
                                         transfer_function:   "rsync_archive".to_string(),
                                         archive_directory:   "/media/archive/2026/05/".to_string(),

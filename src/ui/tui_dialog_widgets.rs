@@ -205,14 +205,14 @@ impl Widget for DialogBlock<'_> {
     }
 }
 
-pub struct DialogFloatingListItem<'a> {
-    pub label: &'a str,
+pub struct DialogFloatingListItem {
+    pub label: String,
     pub is_current: bool,
 }
 
 pub struct DialogFloatingList<'a> {
     title: &'a str,
-    items: Vec<DialogFloatingListItem<'a>>,
+    items: Vec<DialogFloatingListItem>,
     selected: usize,
     hint: Option<Line<'a>>,
 }
@@ -221,7 +221,7 @@ impl<'a> DialogFloatingList<'a> {
     pub fn new(title: &'a str) -> Self {
         Self { title, items: Vec::new(), selected: 0, hint: None }
     }
-    pub fn items(mut self, items: Vec<DialogFloatingListItem<'a>>) -> Self {
+    pub fn items(mut self, items: Vec<DialogFloatingListItem>) -> Self {
         self.items = items;
         self
     }
@@ -281,7 +281,7 @@ impl Widget for DialogFloatingList<'_> {
             let row_area = Rect { x: inner.x, y, width: inner.width, height: 1 };
             Paragraph::new(Line::from(vec![
                 Span::styled(marker, marker_style),
-                Span::styled(item.label, row_style),
+                Span::styled(item.label.as_str(), row_style),
             ])).render(row_area, buf);
         }
 

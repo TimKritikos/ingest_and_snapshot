@@ -12,6 +12,7 @@ use ratatui::widgets::Block;
 use crossterm::event;
 use std::time::Duration;
 use crossterm::event::Event;
+use crate::SourceMediaEntry;
 mod tui_dialog_widgets;
 mod status_bar;
 mod transfers_window;
@@ -41,7 +42,7 @@ struct Transfer {
 
 enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
-    SetAvailableDevices(Vec<String>),
+    SetAvailableDevices(Vec<SourceMediaEntry>),
     NewTransfer { name: String, camera_name: String, rx_control: Receiver<TransferEvent> },
     UserQuery(UserQuery),
     Quit,
@@ -68,7 +69,7 @@ impl UiBackend for TuiBackend {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::AddConfig { allow, ignore }).map_err(|_| UiError::Disconnected)
     }
-    fn set_available_devices(&mut self, devices: Vec<String>) -> Result<(), UiError> {
+    fn set_available_devices(&mut self, devices: Vec<SourceMediaEntry>) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::SetAvailableDevices(devices)).map_err(|_| UiError::Disconnected)
     }
     fn new_transfer(&mut self, name: String, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
@@ -90,7 +91,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut l_ignore: Vec<String> = Vec::new();
     let mut transfers: Vec<Transfer> = Vec::new();
     let mut query_queue: VecDeque<UserQuery> = VecDeque::new();
-    let mut available_devices: Option<Vec<String>> = None;
+    let mut available_devices: Option<Vec<SourceMediaEntry>> = None;
     let mut actions_state = ActionsWindowState::new();
     let mut query_state = user_queries_window::QueryWindowState::new();
 
@@ -214,7 +215,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[String]>) {
+fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
