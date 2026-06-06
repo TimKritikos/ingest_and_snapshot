@@ -89,6 +89,7 @@ pub enum UserQuery {
 /// Messages the UI sends back to the main logic.
 pub enum UiToLogicMessage {
     Quit,
+    StartManualTransfer,
 }
 
 /// Returned when a UiBackend method fails because the backend is no longer reachable.
@@ -101,7 +102,7 @@ pub enum UiError {
 pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
     fn set_available_devices(&mut self, devices: Vec<crate::SourceMediaEntry>) -> Result<(), UiError>;
-    fn new_transfer(&mut self, name: String, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
+    fn new_transfer(&mut self, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
     fn user_query(&mut self, query: UserQuery) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().

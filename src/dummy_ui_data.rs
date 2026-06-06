@@ -16,12 +16,7 @@ pub fn run() -> ! {
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> =
         Arc::new(Mutex::new(Box::new(TuiBackend::new(ui_to_logic_tx))));
 
-    {
-        let ui = Arc::clone(&ui);
-        thread::spawn(move || {
-            thread::sleep(time::Duration::from_millis(300));
-
-            let dummy_source_media = vec![
+    let dummy_source_media = vec![
                 SourceMediaEntry {
                     id:                       "sony_a7iv".to_string(),
                     device_make_name:         "Sony".to_string(),
@@ -62,13 +57,19 @@ pub fn run() -> ! {
                     serial_number:            "3102948576".to_string(),
                     directory:                PathBuf::from("/media/source_media/nikon_z9"),
                 },
-            ];
+    ];
+
+    {
+        let ui = Arc::clone(&ui);
+        let dummy_source_media = dummy_source_media.clone();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_millis(300));
+
             ui.lock().unwrap().set_available_devices(dummy_source_media.clone()).unwrap();
 
             // Transfer 1: historical finished transfer (simulating a restore from saved state)
             let (tx1, rx1) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "/dev/disk/by-id/usb-SanDisk_Ultra_USB_3.0_AA010203-0:0".to_string(),
                 "Sony A7 IV".to_string(),
                 rx1,
             ).unwrap();
@@ -94,7 +95,6 @@ pub fn run() -> ! {
             // The left half of the chart should have short bars, right half tall bars.
             let (tx4, rx4) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "/dev/disk/by-id/usb-TwoPhase_SpeedTest-0:0".to_string(),
                 "Canon EOS R5".to_string(),
                 rx4,
             ).unwrap();
@@ -126,7 +126,6 @@ pub fn run() -> ! {
             // Transfer 3: live in-progress — 50 samples/sec with varied speed
             let (tx3, rx3) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "/dev/disk/by-id/usb-WD_Elements_25A3_CC030609-0:0".to_string(),
                 "Fujifilm GFX 100S".to_string(),
                 rx3,
             ).unwrap();
@@ -193,7 +192,6 @@ pub fn run() -> ! {
 
                 let (tx2, rx2) = mpsc::channel::<ui_api::TransferEvent>();
                 ui_approve.lock().unwrap().new_transfer(
-                    "/dev/disk/by-id/usb-Kingston_DataTraveler_3.0_BB020406-0:0".to_string(),
                     "Nikon Z9".to_string(),
                     rx2,
                 ).unwrap();
@@ -300,9 +298,93 @@ pub fn run() -> ! {
 
     loop {
         thread::sleep(time::Duration::from_millis(50));
-        if let Ok(ui_api::UiToLogicMessage::Quit) = ui_to_logic_rx.try_recv() {
-            ui.lock().unwrap().quit().unwrap();
-            break;
+        if let Ok(msg) = ui_to_logic_rx.try_recv() {
+            match msg {
+                ui_api::UiToLogicMessage::Quit => {
+                    ui.lock().unwrap().quit().unwrap();
+                    break;
+                }
+                ui_api::UiToLogicMessage::StartManualTransfer => {
+                    let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
+                    ui.lock().unwrap().new_transfer(
+                        String::new(),
+                        transfer_event_rx,
+                    ).unwrap();
+
+                    let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
+                    let (update_tx, update_rx) = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+                    ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
+                        data: ui_api::ApproveTransferQueryUpdate {
+                            device_product_name: String::new(),
+                            brand:               String::new(),
+                            serial_number:       String::new(),
+                            source_device:       String::new(),
+                            transfer_function:   String::new(),
+                            archive_directory:   String::new(),
+                            data_size:           0,
+                            card_id:             String::new(),
+                            device_overridden:   false,
+                        },
+                        response_tx,
+                        update_rx,
+                    })).unwrap();
+
+                    let source_media = dummy_source_media.clone();
+                    thread::spawn(move || {
+                        while let Ok(response) = response_rx.recv() {
+                            match response {
+                                ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
+                                    let update = match directory_opt {
+                                        Some(directory) => {
+                                            let Some(entry) = source_media.iter()
+                                                .find(|e| e.directory.to_string_lossy() == directory.as_str())
+                                            else { continue };
+                                            let model = entry.device_model_name_pretty.as_deref()
+                                                .unwrap_or(&entry.device_model_name);
+                                            let display_name = format!("{} {}", entry.device_make_name, model);
+                                            let _ = transfer_event_tx.send(ui_api::TransferEvent::CameraNameChanged(display_name.clone()));
+                                            ui_api::ApproveTransferQueryUpdate {
+                                                device_product_name: display_name,
+                                                brand:               entry.device_make_name.clone(),
+                                                serial_number:       entry.serial_number.clone(),
+                                                source_device:       String::new(),
+                                                transfer_function:   String::new(),
+                                                archive_directory:   String::new(),
+                                                data_size:           0,
+                                                card_id:             String::new(),
+                                                device_overridden:   true,
+                                            }
+                                        }
+                                        None => {
+                                            let _ = transfer_event_tx.send(ui_api::TransferEvent::CameraNameChanged(String::new()));
+                                            ui_api::ApproveTransferQueryUpdate {
+                                                device_product_name: String::new(),
+                                                brand:               String::new(),
+                                                serial_number:       String::new(),
+                                                source_device:       String::new(),
+                                                transfer_function:   String::new(),
+                                                archive_directory:   String::new(),
+                                                data_size:           0,
+                                                card_id:             String::new(),
+                                                device_overridden:   false,
+                                            }
+                                        }
+                                    };
+                                    let _ = update_tx.send(update);
+                                }
+                                ui_api::ApproveTransferResponse::Approved => {
+                                    // TODO: start actual dummy transfer
+                                    break;
+                                }
+                                ui_api::ApproveTransferResponse::Denied => {
+                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
         }
     }
 

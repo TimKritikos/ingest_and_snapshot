@@ -32,7 +32,6 @@ enum TransferStatus {
 }
 
 struct Transfer {
-    name: String,
     camera_name: String,
     bytes_total: u64,
     samples: Vec<TransferSample>,
@@ -43,7 +42,7 @@ struct Transfer {
 enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
     SetAvailableDevices(Vec<SourceMediaEntry>),
-    NewTransfer { name: String, camera_name: String, rx_control: Receiver<TransferEvent> },
+    NewTransfer { camera_name: String, rx_control: Receiver<TransferEvent> },
     UserQuery(UserQuery),
     Quit,
 }
@@ -72,8 +71,8 @@ impl UiBackend for TuiBackend {
     fn set_available_devices(&mut self, devices: Vec<SourceMediaEntry>) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::SetAvailableDevices(devices)).map_err(|_| UiError::Disconnected)
     }
-    fn new_transfer(&mut self, name: String, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
-        self.tx.send(LogicToUiMessage::NewTransfer { name, camera_name, rx_control }).map_err(|_| UiError::Disconnected)
+    fn new_transfer(&mut self, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::NewTransfer { camera_name, rx_control }).map_err(|_| UiError::Disconnected)
     }
     fn user_query(&mut self, query: UserQuery) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::UserQuery(query)).map_err(|_| UiError::Disconnected)
@@ -147,9 +146,8 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                     available_devices = Some(devices);
                 }
                 LogicToUiMessage::Quit => return Ok(()),
-                LogicToUiMessage::NewTransfer { name, camera_name, rx_control } => {
+                LogicToUiMessage::NewTransfer { camera_name, rx_control } => {
                     transfers.push(Transfer {
-                        name,
                         camera_name,
                         bytes_total: 0,
                         samples: Vec::new(),
@@ -171,10 +169,14 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                 let prev_len = query_queue.len();
                 user_queries_window::handle_key(&mut query_state, key, &mut query_queue, available_devices.as_deref());
                 if query_queue.len() != prev_len {
-                    query_state = user_queries_window::QueryWindowState::new();
+                    query_state = user_queries_window::QueryWindowState::new(); //TODO: check what's going on here
                 }
-            } else if let Some(ActionsWindowEvent::Quit) = user_actions_window::handle_key(&mut actions_state, key) {
-                tx.send(UiToLogicMessage::Quit).unwrap();
+            } else {
+                match user_actions_window::handle_key(&mut actions_state, key) {
+                    Some(ActionsWindowEvent::Quit)                => tx.send(UiToLogicMessage::Quit).unwrap(),
+                    Some(ActionsWindowEvent::StartManualTransfer) => tx.send(UiToLogicMessage::StartManualTransfer).unwrap(),
+                    None => {}
+                }
             }
         }
 

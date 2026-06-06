@@ -6,6 +6,7 @@ use super::tui_dialog_widgets;
 #[derive(PartialEq)]
 pub enum SelectedAction {
     Quit,
+    ManualTransfer,
     Snapshot,
 }
 
@@ -21,26 +22,31 @@ impl ActionsWindowState {
 
 pub enum ActionsWindowEvent {
     Quit,
+    StartManualTransfer,
 }
 
 pub fn handle_key(state: &mut ActionsWindowState, key: KeyEvent) -> Option<ActionsWindowEvent> {
     match key.code {
         KeyCode::Up => {
             state.selected = match state.selected {
-                SelectedAction::Snapshot => SelectedAction::Quit,
-                SelectedAction::Quit     => SelectedAction::Quit,
+                SelectedAction::Quit           => SelectedAction::Quit,
+                SelectedAction::ManualTransfer => SelectedAction::Quit,
+                SelectedAction::Snapshot       => SelectedAction::ManualTransfer,
             };
         }
         KeyCode::Down => {
             state.selected = match state.selected {
-                SelectedAction::Quit     => SelectedAction::Snapshot,
-                SelectedAction::Snapshot => SelectedAction::Snapshot,
+                SelectedAction::Quit           => SelectedAction::ManualTransfer,
+                SelectedAction::ManualTransfer => SelectedAction::Snapshot,
+                SelectedAction::Snapshot       => SelectedAction::Snapshot,
             };
         }
         KeyCode::Enter => {
-            if matches!(state.selected, SelectedAction::Quit) {
-                return Some(ActionsWindowEvent::Quit);
-            }
+            return match state.selected {
+                SelectedAction::Quit           => Some(ActionsWindowEvent::Quit),
+                SelectedAction::ManualTransfer => Some(ActionsWindowEvent::StartManualTransfer),
+                SelectedAction::Snapshot       => None,
+            };
         }
         _ => {}
     }
@@ -56,12 +62,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
 
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
         "Exit",
+        "Start manual transfer",
         "Finish backup and do snapshot",
     ])
         .title("Options")
         .selected(Some(match state.selected {
-            SelectedAction::Quit     => 0,
-            SelectedAction::Snapshot => 1,
+            SelectedAction::Quit           => 0,
+            SelectedAction::ManualTransfer => 1,
+            SelectedAction::Snapshot       => 2,
         }))
         .focused(focused);
 

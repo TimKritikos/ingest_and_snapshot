@@ -25,6 +25,7 @@ use std::process;
 use std::env;
 use std::fs::File;
 use std::{thread, time};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Sender};
 use clap::Parser;
 use home::home_dir;
@@ -37,6 +38,7 @@ use std::ffi::OsStr;
 
 mod ui;
 mod ui_api;
+mod transfer_logic;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -403,9 +405,9 @@ fn main() {
     let (ui_to_logic_tx, ui_to_logic_rx) = mpsc::channel::<ui_api::UiToLogicMessage>();
     let tui_backend = ui::TuiBackend::new(ui_to_logic_tx);
 
-    let mut ui: Box<dyn ui_api::UiBackend> = Box::new(tui_backend);
+    let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> = Arc::new(Mutex::new(Box::new(tui_backend)));
 
-    ui.add_config(config.allow_device_list, config.ignore_device_list).unwrap();
+    ui.lock().unwrap().add_config(config.allow_device_list, config.ignore_device_list).unwrap();
 
     let devices_config: DevicesConfig = {
         let devices_path = media_dir.join("metadata/devices.json");
@@ -434,13 +436,13 @@ fn main() {
             Ok(dc) => dc,
             Err(msg) => {
                 let (response_tx, response_rx) = mpsc::channel::<()>();
-                ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                     error: ui_api::FatalErrorKind::DevicesJson(msg),
                     response_tx,
                 })).unwrap();
                 let _ = response_rx.recv();
-                ui.quit().unwrap();
-                ui.join();
+                ui.lock().unwrap().quit().unwrap();
+                if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
                 process::exit(1);
             }
         }
@@ -450,20 +452,20 @@ fn main() {
         Ok(result) => result,
         Err(msg) => {
             let (response_tx, response_rx) = mpsc::channel::<()>();
-            ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::SourceMedia(msg),
                 response_tx,
             })).unwrap();
             let _ = response_rx.recv();
-            ui.quit().unwrap();
-            ui.join();
+            ui.lock().unwrap().quit().unwrap();
+            if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
             process::exit(1);
         }
     };
 
     if !source_media_warnings.is_empty() {
         let (response_tx, _response_rx) = mpsc::channel::<()>();
-        ui.user_query(ui_api::UserQuery::SourceMediaWarnings(ui_api::SourceMediaWarningsQuery {
+        ui.lock().unwrap().user_query(ui_api::UserQuery::SourceMediaWarnings(ui_api::SourceMediaWarningsQuery {
             warnings: source_media_warnings,
             response_tx,
         })).unwrap();
@@ -471,7 +473,7 @@ fn main() {
 
     if source_media_entries.is_empty() {
         let (response_tx, response_rx) = mpsc::channel::<()>();
-        ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+        ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
             error: ui_api::FatalErrorKind::SourceMedia(format!(
                 "{}: no valid source media configurations found",
                 media_dir.join(SOURCE_MEDIA_DIR_NAME).display()
@@ -479,24 +481,24 @@ fn main() {
             response_tx,
         })).unwrap();
         let _ = response_rx.recv();
-        ui.quit().unwrap();
-        ui.join();
+        ui.lock().unwrap().quit().unwrap();
+        if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
         process::exit(1);
     }
 
-    ui.set_available_devices(source_media_entries.clone()).unwrap();
+    ui.lock().unwrap().set_available_devices(source_media_entries.clone()).unwrap();
 
     let backup_log_state = match load_backup_log(&media_dir) {
         Ok(state) => state,
         Err(msg) => {
             let (response_tx, response_rx) = mpsc::channel::<()>();
-            ui.user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::BackupLog(msg),
                 response_tx,
             })).unwrap();
             let _ = response_rx.recv();
-            ui.quit().unwrap();
-            ui.join();
+            ui.lock().unwrap().quit().unwrap();
+            if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
             process::exit(1);
         }
     };
@@ -515,7 +517,7 @@ fn main() {
                 .unwrap_or_else(|| "Unknown camera".to_string());
 
                 let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
-                ui.new_transfer(transfer.card_path.display().to_string(), camera_name, transfer_event_rx).unwrap();
+                ui.lock().unwrap().new_transfer(camera_name, transfer_event_rx).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
                     ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 },
@@ -539,9 +541,20 @@ fn main() {
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {
-                    ui.quit().unwrap();
+                    ui.lock().unwrap().quit().unwrap();
                     break 'outer;
-                },
+                }
+                ui_api::UiToLogicMessage::StartManualTransfer => {
+                    transfer_logic::spawn_transfer(
+                        Arc::clone(&ui),
+                        source_media_entries.clone(),
+                        transfer_logic::DetectedTransferInfo {
+                            source_media:  None,
+                            card_id:       None,
+                            source_device: None,
+                        },
+                    );
+                }
             }
         }
 
@@ -555,7 +568,7 @@ fn main() {
                     if link.contains("/dev/disk/by-id/") {
                         let (tx_control, rx_control) = mpsc::channel::<ui_api::TransferEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
-                        ui.new_transfer(link.to_string(), String::new(), rx_control).unwrap();
+                        ui.lock().unwrap().new_transfer(String::new(), rx_control).unwrap();
                         break;
                     }
                 }
@@ -566,6 +579,17 @@ fn main() {
             }
         }
     }
-    ui.join();
+    loop {
+        match Arc::try_unwrap(ui) {
+            Ok(mutex) => {
+                mutex.into_inner().unwrap().join();
+                break;
+            }
+            Err(arc) => {
+                ui = arc;
+                thread::sleep(time::Duration::from_millis(10));
+            }
+        }
+    }
 
 }
