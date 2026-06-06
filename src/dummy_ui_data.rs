@@ -18,7 +18,6 @@ pub fn run() -> ! {
 
     let dummy_source_media = vec![
                 SourceMediaEntry {
-                    id:                       "sony_a7iv".to_string(),
                     device_make_name:         "Sony".to_string(),
                     device_model_name:        "ILCE-7M4".to_string(),
                     device_model_name_pretty: Some("A7 IV".to_string()),
@@ -26,7 +25,6 @@ pub fn run() -> ! {
                     directory:                PathBuf::from("/media/source_media/sony_a7iv"),
                 },
                 SourceMediaEntry {
-                    id:                       "sony_a7rv".to_string(),
                     device_make_name:         "Sony".to_string(),
                     device_model_name:        "ILCE-7RM5".to_string(),
                     device_model_name_pretty: Some("A7R V".to_string()),
@@ -34,7 +32,6 @@ pub fn run() -> ! {
                     directory:                PathBuf::from("/media/source_media/sony_a7rv"),
                 },
                 SourceMediaEntry {
-                    id:                       "canon_eos_r5".to_string(),
                     device_make_name:         "Canon".to_string(),
                     device_model_name:        "EOS R5".to_string(),
                     device_model_name_pretty: None,
@@ -42,7 +39,6 @@ pub fn run() -> ! {
                     directory:                PathBuf::from("/media/source_media/canon_eos_r5"),
                 },
                 SourceMediaEntry {
-                    id:                       "fujifilm_gfx100s".to_string(),
                     device_make_name:         "Fujifilm".to_string(),
                     device_model_name:        "GFX 100S".to_string(),
                     device_model_name_pretty: None,
@@ -50,7 +46,6 @@ pub fn run() -> ! {
                     directory:                PathBuf::from("/media/source_media/fujifilm_gfx100s"),
                 },
                 SourceMediaEntry {
-                    id:                       "nikon_z9".to_string(),
                     device_make_name:         "Nikon".to_string(),
                     device_model_name:        "Z 9".to_string(),
                     device_model_name_pretty: Some("Z9".to_string()),

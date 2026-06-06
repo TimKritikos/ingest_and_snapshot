@@ -87,7 +87,6 @@ struct SourceMediaUniqueIdentification {
 
 #[derive(Deserialize)]
 struct SourceMediaInfo {
-    id: String,
     device_make_name: String,
     device_model_name: String,
     device_model_name_pretty: Option<String>,
@@ -107,7 +106,6 @@ struct SourceMediaConfig {
 
 #[derive(Clone)]
 struct SourceMediaEntry {
-    id: String,
     device_make_name: String,
     device_model_name: String,
     device_model_name_pretty: Option<String>,
@@ -349,7 +347,6 @@ fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<
         };
 
         entries.push(SourceMediaEntry {
-            id:                       config.source_media_info.id,
             device_make_name:         config.source_media_info.device_make_name,
             device_model_name:        config.source_media_info.device_model_name,
             device_model_name_pretty: config.source_media_info.device_model_name_pretty,
