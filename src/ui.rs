@@ -32,7 +32,7 @@ enum TransferStatus {
 }
 
 struct Transfer {
-    camera_name: String,
+    source_media_dir: Option<String>,
     bytes_total: u64,
     samples: Vec<TransferSample>,
     status: TransferStatus,
@@ -42,7 +42,7 @@ struct Transfer {
 enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
     SetAvailableDevices(Vec<SourceMediaEntry>),
-    NewTransfer { camera_name: String, rx_control: Receiver<TransferEvent> },
+    NewTransfer { source_media_dir: Option<String>, rx_control: Receiver<TransferEvent> },
     UserQuery(UserQuery),
     Quit,
 }
@@ -71,8 +71,8 @@ impl UiBackend for TuiBackend {
     fn set_available_devices(&mut self, devices: Vec<SourceMediaEntry>) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::SetAvailableDevices(devices)).map_err(|_| UiError::Disconnected)
     }
-    fn new_transfer(&mut self, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
-        self.tx.send(LogicToUiMessage::NewTransfer { camera_name, rx_control }).map_err(|_| UiError::Disconnected)
+    fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::NewTransfer { source_media_dir, rx_control }).map_err(|_| UiError::Disconnected)
     }
     fn user_query(&mut self, query: UserQuery) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::UserQuery(query)).map_err(|_| UiError::Disconnected)
@@ -102,7 +102,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
             while let Ok(event) = transfers[i].rx_control.try_recv() {
                 match event {
                     TransferEvent::DeviceUnplugged => { remove = true; }
-                    TransferEvent::CameraNameChanged(name) => { transfers[i].camera_name = name; }
+                    TransferEvent::SourceMediaChanged(dir) => { transfers[i].source_media_dir = dir; }
                     TransferEvent::TransferStarted { bytes_total } => {
                         transfers[i].bytes_total = bytes_total;
                         transfers[i].status = TransferStatus::InProgress;
@@ -146,9 +146,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                     available_devices = Some(devices);
                 }
                 LogicToUiMessage::Quit => return Ok(()),
-                LogicToUiMessage::NewTransfer { camera_name, rx_control } => {
+                LogicToUiMessage::NewTransfer { source_media_dir, rx_control } => {
                     transfers.push(Transfer {
-                        camera_name,
+                        source_media_dir,
                         bytes_total: 0,
                         samples: Vec::new(),
                         status: TransferStatus::NotStarted,
@@ -260,7 +260,7 @@ fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &V
     // Windows
     let mut window_index = 0;
 
-    transfers_window::render(frame, windows[window_index], transfers);
+    transfers_window::render(frame, windows[window_index], transfers, available_devices);
     window_index += 2;
 
     if let Some(query) = current_query {

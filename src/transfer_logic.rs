@@ -26,17 +26,13 @@ fn run_transfer(
     all_source_media: Vec<SourceMediaEntry>,
     detected: DetectedTransferInfo,
 ) {
-    let initial_camera_name = detected.source_media.as_ref()
-        .map(|e| {
-            let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-            format!("{} {}", e.device_make_name, model)
-        })
-        .unwrap_or_default();
+    let initial_source_media_dir = detected.source_media.as_ref()
+        .map(|e| e.directory.to_string_lossy().into_owned());
 
     // Step 1: Register the transfer in the UI
     let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
     if ui.lock().unwrap().new_transfer(
-        initial_camera_name,
+        initial_source_media_dir,
         transfer_event_rx,
     ).is_err() { return; }
 
@@ -92,8 +88,8 @@ fn build_overwrite_update(
         None => None,
     };
     let update = query_update_from_entry(entry, String::new(), String::new(), entry.is_some());
-    let _ = transfer_event_tx.send(ui_api::TransferEvent::CameraNameChanged(
-        update.device_product_name.clone(),
+    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
+        update.source_media_dir.clone(),
     ));
     Some(update)
 }
@@ -104,32 +100,12 @@ fn query_update_from_entry(
     card_id: String,
     device_overridden: bool,
 ) -> ui_api::ApproveTransferQueryUpdate {
-    match entry {
-        Some(entry) => {
-            let model = entry.device_model_name_pretty.as_deref()
-                .unwrap_or(&entry.device_model_name);
-            ui_api::ApproveTransferQueryUpdate {
-                device_product_name: format!("{} {}", entry.device_make_name, model),
-                brand:               entry.device_make_name.clone(),
-                serial_number:       entry.serial_number.clone(),
-                source_device,
-                transfer_function:   String::new(),
-                archive_directory:   String::new(),
-                data_size:           0,
-                card_id,
-                device_overridden,
-            }
-        }
-        None => ui_api::ApproveTransferQueryUpdate {
-            device_product_name: String::new(),
-            brand:               String::new(),
-            serial_number:       String::new(),
-            source_device,
-            transfer_function:   String::new(),
-            archive_directory:   String::new(),
-            data_size:           0,
-            card_id,
-            device_overridden,
-        },
+    ui_api::ApproveTransferQueryUpdate {
+        source_media_dir: entry.map(|e| e.directory.to_string_lossy().into_owned()),
+        source_device,
+        transfer_function: String::new(),
+        data_size:         0,
+        card_id,
+        device_overridden,
     }
 }

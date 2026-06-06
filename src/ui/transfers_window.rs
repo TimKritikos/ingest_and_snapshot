@@ -7,6 +7,7 @@ use ratatui::buffer::Buffer;
 use super::tui_dialog_widgets;
 use super::{Transfer, TransferStatus};
 use crate::ui_api::TransferSample;
+use crate::SourceMediaEntry;
 
 const ITEM_HEIGHT:   u16 = 4; // 1 title row + 3 chart rows
 const ITEM_GAP:      u16 = 1;
@@ -20,7 +21,7 @@ const BRAILLE_DOT_RIGHT: [u8; 5] = [0x00, 0x80, 0xA0, 0xB0, 0xB8];
 
 use super::{BRAILLE_BAR_LEFT, BRAILLE_BAR_RIGHT};
 
-pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
+pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>) {
 
     //Generare the window and title
     let in_progress = transfers.iter().filter(|t| matches!(t.status, TransferStatus::InProgress)).count();
@@ -63,7 +64,7 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
         if y_offset >= padded.height { break; }
         let item_h = ITEM_HEIGHT.min(padded.height - y_offset);
         frame.render_widget(
-            TransferItem { transfer },
+            TransferItem { transfer, available_devices },
             Rect { x: padded.x, y: padded.y + y_offset, width: padded.width, height: item_h },
         );
     }
@@ -71,6 +72,7 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer]) {
 
 struct TransferItem<'a> {
     transfer: &'a Transfer,
+    available_devices: Option<&'a [SourceMediaEntry]>,
 }
 
 impl Widget for TransferItem<'_> {
@@ -98,13 +100,21 @@ impl Widget for TransferItem<'_> {
             bytes_done * 100 / self.transfer.bytes_total
         } else { 0 };
 
+        let device_name: String = self.transfer.source_media_dir.as_deref()
+            .and_then(|dir| self.available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
+            .map(|e| {
+                let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
+                format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
+            })
+            .unwrap_or_default();
+
         let mut spans = vec![
             Span::styled("[", bracket_style),
             Span::styled(badge_inner, badge_style),
             Span::styled("]", bracket_style),
             Span::styled(" ", sep_style),
             Span::styled(format!("{:>3}% | ", presentage), stats_style),
-            Span::styled(self.transfer.camera_name.as_str(), name_style),
+            Span::styled(device_name.as_str(), name_style),
         ];
 
         let current_speed = derive_current_speed(&self.transfer.samples);

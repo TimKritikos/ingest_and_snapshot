@@ -28,7 +28,7 @@ pub struct TransferSample {
 
 pub enum TransferEvent {
     DeviceUnplugged,
-    CameraNameChanged(String),
+    SourceMediaChanged(Option<String>),
     TransferStarted { bytes_total: u64 },
     TransferSamples(Vec<TransferSample>),
 }
@@ -40,12 +40,9 @@ pub enum ApproveTransferResponse {
 }
 
 pub struct ApproveTransferQueryUpdate {
-    pub device_product_name: String,
-    pub brand: String,
-    pub serial_number: String,
+    pub source_media_dir: Option<String>,
     pub source_device: String,
     pub transfer_function: String,
-    pub archive_directory: String,
     pub data_size: u64,
     pub card_id: String,
     pub device_overridden: bool,
@@ -102,7 +99,7 @@ pub enum UiError {
 pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
     fn set_available_devices(&mut self, devices: Vec<crate::SourceMediaEntry>) -> Result<(), UiError>;
-    fn new_transfer(&mut self, camera_name: String, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
+    fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
     fn user_query(&mut self, query: UserQuery) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().

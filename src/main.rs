@@ -505,19 +505,13 @@ fn main() {
     match backup_log_state {
         BackupLogState::UseExistingEntry(entry) => {
             for transfer in entry.new_transfers {
-                let camera_name = source_media_entries
+                let source_media_dir = source_media_entries
                     .iter()
                     .find(|sme| media_dir.join(&transfer.card_path).starts_with(&sme.directory))
-                    .map(|sme| {
-                        let model = sme.device_model_name_pretty.as_deref()
-                            .unwrap_or(&sme.device_model_name);
-                        format!("{} {} (SN: {})", sme.device_make_name, model, sme.serial_number)
-                    })
-                // TODO: resolve camera name from sources other than source media directory matching
-                .unwrap_or_else(|| "Unknown camera".to_string());
+                    .map(|sme| sme.directory.to_string_lossy().into_owned()); //TODO: report to the user if it didn't get found
 
                 let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
-                ui.lock().unwrap().new_transfer(camera_name, transfer_event_rx).unwrap();
+                ui.lock().unwrap().new_transfer(source_media_dir, transfer_event_rx).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
                     ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 },
@@ -568,7 +562,7 @@ fn main() {
                     if link.contains("/dev/disk/by-id/") {
                         let (tx_control, rx_control) = mpsc::channel::<ui_api::TransferEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
-                        ui.lock().unwrap().new_transfer(String::new(), rx_control).unwrap();
+                        ui.lock().unwrap().new_transfer(None, rx_control).unwrap();
                         break;
                     }
                 }

@@ -134,7 +134,7 @@ pub fn render(
 
     match query {
         UserQuery::ApproveTransfer(query) => {
-            render_approve_transfer(frame, padded, query, state.device_override.as_ref());
+            render_approve_transfer(frame, padded, query, state.device_override.as_ref(), available_devices);
             if state.device_picker_open {
                 render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection);
             }
@@ -145,7 +145,7 @@ pub fn render(
     }
 }
 
-fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, device_override: Option<&SourceMediaEntry>) {
+fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, device_override: Option<&SourceMediaEntry>, available_devices: Option<&[SourceMediaEntry]>) {
     let icon_cols = area.height * super::FONT_CELL_ASPECT_RATIO;
     let least_characters_for_text = 20 ; //TODO: I made this number up
 
@@ -178,7 +178,7 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
         ])
         .split(content_area);
 
-    render_transfer_info(frame, rows[0], query);
+    render_transfer_info(frame, rows[0], query, available_devices);
 
     let label_style    = Style::default().fg(Color::Black);
     let key_style      = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
@@ -293,24 +293,45 @@ fn render_icon_placeholder(frame: &mut Frame, area: Rect) {
     }
 }
 
-fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery) {
+fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {
     let label       = Style::default().fg(Color::Black);
     let value       = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
     let overwritten = Style::default().fg(Color::DarkGray);
+    let none_style  = Style::default().fg(Color::DarkGray);
     let data = &query.data;
     let size_str = super::format_bytes(data.data_size);
 
-    let mut product_spans = vec![Span::styled("Product:  ", label), Span::styled(data.device_product_name.as_str(), value)];
+    let entry = data.source_media_dir.as_deref()
+        .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir));
+
+    let (device_name, make_name, serial_str) = match entry {
+        Some(e) => {
+            let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
+            (
+                format!("{} {}", e.device_make_name, model),
+                e.device_make_name.as_str().to_owned(),
+                e.serial_number.clone(),
+            )
+        }
+        None => (String::new(), String::new(), String::new()),
+    };
+
+    let (device_value_str, device_style) = if device_name.is_empty() {
+        ("none".to_owned(), none_style)
+    } else {
+        (device_name, value)
+    };
+
+    let mut product_spans = vec![Span::styled("Device:   ", label), Span::styled(device_value_str, device_style)];
     if data.device_overridden {
-        product_spans.push(Span::styled(" (overwritten)", overwritten));
+        product_spans.push(Span::styled(" (overridden)", overwritten));
     }
 
     let mut lines: Vec<Line> = vec![
         Line::from(product_spans),
-        Line::from(vec![Span::styled("Brand:    ", label), Span::styled(data.brand.as_str(), value)]),
-        Line::from(vec![Span::styled("Serial:   ", label), Span::styled(data.serial_number.as_str(), value)]),
+        Line::from(vec![Span::styled("Make:     ", label), Span::styled(make_name, value)]),
+        Line::from(vec![Span::styled("Serial:   ", label), Span::styled(serial_str, value)]),
         Line::from(vec![Span::styled("Function: ", label), Span::styled(data.transfer_function.as_str(), value)]),
-        Line::from(vec![Span::styled("Archive:  ", label), Span::styled(data.archive_directory.as_str(), value)]),
         Line::from(vec![
             Span::styled("Size:     ", label),
             Span::styled(size_str, value),

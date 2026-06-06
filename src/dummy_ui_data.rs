@@ -70,7 +70,7 @@ pub fn run() -> ! {
             // Transfer 1: historical finished transfer (simulating a restore from saved state)
             let (tx1, rx1) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "Sony A7 IV".to_string(),
+                Some("/media/source_media/sony_a7iv".to_string()),
                 rx1,
             ).unwrap();
             let total1: u64 = 4 * 1024 * 1024 * 1024;
@@ -95,7 +95,7 @@ pub fn run() -> ! {
             // The left half of the chart should have short bars, right half tall bars.
             let (tx4, rx4) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "Canon EOS R5".to_string(),
+                Some("/media/source_media/canon_eos_r5".to_string()),
                 rx4,
             ).unwrap();
 
@@ -126,7 +126,7 @@ pub fn run() -> ! {
             // Transfer 3: live in-progress — 50 samples/sec with varied speed
             let (tx3, rx3) = mpsc::channel::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
-                "Fujifilm GFX 100S".to_string(),
+                Some("/media/source_media/fujifilm_gfx100s".to_string()),
                 rx3,
             ).unwrap();
 
@@ -192,7 +192,7 @@ pub fn run() -> ! {
 
                 let (tx2, rx2) = mpsc::channel::<ui_api::TransferEvent>();
                 ui_approve.lock().unwrap().new_transfer(
-                    "Nikon Z9".to_string(),
+                    Some("/media/source_media/nikon_z9".to_string()),
                     rx2,
                 ).unwrap();
 
@@ -201,15 +201,12 @@ pub fn run() -> ! {
 
                 ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                     data: ui_api::ApproveTransferQueryUpdate {
-                        device_product_name: "Nikon Z9".to_string(),
-                        brand:               "Nikon".to_string(),
-                        serial_number:       "3102948576".to_string(),
-                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                        transfer_function:   "rsync_archive".to_string(),
-                        archive_directory:   "/media/archive/2026/05/".to_string(),
-                        data_size:           12 * 1024 * 1024 * 1024,
-                        card_id:             "NIKON_001".to_string(),
-                        device_overridden:   false,
+                        source_media_dir:  Some("/media/source_media/nikon_z9".to_string()),
+                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
+                        transfer_function: "rsync_archive".to_string(),
+                        data_size:         12 * 1024 * 1024 * 1024,
+                        card_id:           "NIKON_001".to_string(),
+                        device_overridden: false,
                     },
                     response_tx,
                     update_rx,
@@ -218,40 +215,26 @@ pub fn run() -> ! {
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
                         ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
+                            let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(directory_opt.clone()));
                             let update = match directory_opt {
                                 Some(directory) => {
-                                    // Look up the entry by its directory (unique ID)
-                                    let entry = dummy_source_media.iter()
-                                        .find(|e| e.directory.to_string_lossy() == directory.as_str())
-                                        .expect("DeviceOverwrite returned a directory not in the known list");
-                                    let model = entry.device_model_name_pretty.as_deref()
-                                        .unwrap_or(&entry.device_model_name);
-                                    let display_name = format!("{} {}", entry.device_make_name, model);
-                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged(display_name.clone()));
                                     ui_api::ApproveTransferQueryUpdate {
-                                        device_product_name: display_name,
-                                        brand:               entry.device_make_name.clone(),
-                                        serial_number:       entry.serial_number.clone(),
-                                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                        transfer_function:   "rsync_archive".to_string(),
-                                        archive_directory:   "/media/archive/2026/05/".to_string(),
-                                        data_size:           12 * 1024 * 1024 * 1024,
-                                        card_id:             "UNKNOWN".to_string(),
-                                        device_overridden:   true,
+                                        source_media_dir:  Some(directory),
+                                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
+                                        transfer_function: "rsync_archive".to_string(),
+                                        data_size:         12 * 1024 * 1024 * 1024,
+                                        card_id:           "UNKNOWN".to_string(),
+                                        device_overridden: true,
                                     }
                                 }
                                 None => {
-                                    let _ = tx2.send(ui_api::TransferEvent::CameraNameChanged("Nikon Z9".to_string()));
                                     ui_api::ApproveTransferQueryUpdate {
-                                        device_product_name: "Nikon Z9".to_string(),
-                                        brand:               "Nikon".to_string(),
-                                        serial_number:       "3102948576".to_string(),
-                                        source_device:       "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                        transfer_function:   "rsync_archive".to_string(),
-                                        archive_directory:   "/media/archive/2026/05/".to_string(),
-                                        data_size:           12 * 1024 * 1024 * 1024,
-                                        card_id:             "NIKON_001".to_string(),
-                                        device_overridden:   false,
+                                        source_media_dir:  Some("/media/source_media/nikon_z9".to_string()),
+                                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
+                                        transfer_function: "rsync_archive".to_string(),
+                                        data_size:         12 * 1024 * 1024 * 1024,
+                                        card_id:           "NIKON_001".to_string(),
+                                        device_overridden: false,
                                     }
                                 }
                             };
@@ -307,7 +290,7 @@ pub fn run() -> ! {
                 ui_api::UiToLogicMessage::StartManualTransfer => {
                     let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
                     ui.lock().unwrap().new_transfer(
-                        String::new(),
+                        None,
                         transfer_event_rx,
                     ).unwrap();
 
@@ -315,60 +298,29 @@ pub fn run() -> ! {
                     let (update_tx, update_rx) = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
                     ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                         data: ui_api::ApproveTransferQueryUpdate {
-                            device_product_name: String::new(),
-                            brand:               String::new(),
-                            serial_number:       String::new(),
-                            source_device:       String::new(),
-                            transfer_function:   String::new(),
-                            archive_directory:   String::new(),
-                            data_size:           0,
-                            card_id:             String::new(),
-                            device_overridden:   false,
+                            source_media_dir:  None,
+                            source_device:     String::new(),
+                            transfer_function: String::new(),
+                            data_size:         0,
+                            card_id:           String::new(),
+                            device_overridden: false,
                         },
                         response_tx,
                         update_rx,
                     })).unwrap();
 
-                    let source_media = dummy_source_media.clone();
                     thread::spawn(move || {
                         while let Ok(response) = response_rx.recv() {
                             match response {
                                 ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
-                                    let update = match directory_opt {
-                                        Some(directory) => {
-                                            let Some(entry) = source_media.iter()
-                                                .find(|e| e.directory.to_string_lossy() == directory.as_str())
-                                            else { continue };
-                                            let model = entry.device_model_name_pretty.as_deref()
-                                                .unwrap_or(&entry.device_model_name);
-                                            let display_name = format!("{} {}", entry.device_make_name, model);
-                                            let _ = transfer_event_tx.send(ui_api::TransferEvent::CameraNameChanged(display_name.clone()));
-                                            ui_api::ApproveTransferQueryUpdate {
-                                                device_product_name: display_name,
-                                                brand:               entry.device_make_name.clone(),
-                                                serial_number:       entry.serial_number.clone(),
-                                                source_device:       String::new(),
-                                                transfer_function:   String::new(),
-                                                archive_directory:   String::new(),
-                                                data_size:           0,
-                                                card_id:             String::new(),
-                                                device_overridden:   true,
-                                            }
-                                        }
-                                        None => {
-                                            let _ = transfer_event_tx.send(ui_api::TransferEvent::CameraNameChanged(String::new()));
-                                            ui_api::ApproveTransferQueryUpdate {
-                                                device_product_name: String::new(),
-                                                brand:               String::new(),
-                                                serial_number:       String::new(),
-                                                source_device:       String::new(),
-                                                transfer_function:   String::new(),
-                                                archive_directory:   String::new(),
-                                                data_size:           0,
-                                                card_id:             String::new(),
-                                                device_overridden:   false,
-                                            }
-                                        }
+                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(directory_opt.clone()));
+                                    let update = ui_api::ApproveTransferQueryUpdate {
+                                        source_media_dir:  directory_opt,
+                                        source_device:     String::new(),
+                                        transfer_function: String::new(),
+                                        data_size:         0,
+                                        card_id:           String::new(),
+                                        device_overridden: true,
                                     };
                                     let _ = update_tx.send(update);
                                 }
