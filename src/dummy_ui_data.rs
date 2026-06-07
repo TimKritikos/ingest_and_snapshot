@@ -54,11 +54,19 @@ pub fn run() -> ! {
                 },
     ];
 
+    let (cancel_tx_outer,   cancel_rx_outer)   = mpsc::channel::<()>();
+    let (cancel_tx_approve, cancel_rx_approve) = mpsc::channel::<()>();
+    let (cancel_tx_scan,    cancel_rx_scan)    = mpsc::channel::<()>();
+    let cancel_senders = vec![cancel_tx_outer, cancel_tx_approve, cancel_tx_scan];
+
     {
         let ui = Arc::clone(&ui);
         let dummy_source_media = dummy_source_media.clone();
         thread::spawn(move || {
-            thread::sleep(time::Duration::from_millis(300));
+            match cancel_rx_outer.recv_timeout(time::Duration::from_millis(300)) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                _ => return,
+            }
 
             ui.lock().unwrap().set_available_devices(dummy_source_media.clone()).unwrap();
 
@@ -167,7 +175,10 @@ pub fn run() -> ! {
             // Dummy ScanNewDevice query after 10 seconds
             let ui_scan = Arc::clone(&ui);
             thread::spawn(move || {
-                thread::sleep(time::Duration::from_secs(10));
+                match cancel_rx_scan.recv_timeout(time::Duration::from_secs(10)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
                 let (response_tx, response_rx) = mpsc::channel::<bool>();
                 ui_scan.lock().unwrap().user_query(ui_api::UserQuery::ScanNewDevice(ui_api::ScanNewDeviceQuery {
                     device_name: "Unknown USB Camera".to_string(),
@@ -183,7 +194,10 @@ pub fn run() -> ! {
                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
                 };
 
-                thread::sleep(time::Duration::from_secs(5));
+                match cancel_rx_approve.recv_timeout(time::Duration::from_secs(5)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
 
                 let (tx2, rx2) = mpsc::channel::<ui_api::TransferEvent>();
                 ui_approve.lock().unwrap().new_transfer(
@@ -279,7 +293,7 @@ pub fn run() -> ! {
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {
-                    ui.lock().unwrap().quit().unwrap();
+                    drop(cancel_senders);
                     break;
                 }
                 ui_api::UiToLogicMessage::StartManualTransfer => {
@@ -335,12 +349,14 @@ pub fn run() -> ! {
         }
     }
 
-    // Wait for all spawned threads to drop their Arc references, then join the UI thread
-    // so ratatui can restore the terminal before we exit.
+    // Wait for all spawned threads to drop their Arc references, then tell the UI to
+    // quit and join its thread so ratatui can restore the terminal before we exit.
     loop {
         match Arc::try_unwrap(ui) {
             Ok(mutex) => {
-                mutex.into_inner().unwrap().join();
+                let mut backend = mutex.into_inner().unwrap();
+                backend.quit().unwrap();
+                backend.join();
                 break;
             }
             Err(arc) => {
