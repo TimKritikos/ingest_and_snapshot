@@ -9,11 +9,9 @@ use time_format::now;
 
 const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 
-pub fn render(frame: &mut Frame, area: Rect, #[cfg(feature = "fps-counter")] fps: f64) {
+pub fn render(frame: &mut Frame, area: Rect, sys: &System, #[cfg(feature = "fps-counter")] fps: f64) {
     let current_time = now().unwrap();
     let timestamp = time_format::strftime_utc("%a, %d %b %Y %T %Z", current_time).unwrap();
-    let mut sys = System::new_all();
-    sys.refresh_all();
 
     let zfs_version = match std::fs::read_to_string(ZFS_VERSION_FILE) {
         Ok(version) => version,
