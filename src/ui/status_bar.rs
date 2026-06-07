@@ -24,7 +24,9 @@ pub fn render(frame: &mut Frame, area: Rect, sys: &System, #[cfg(feature = "fps-
     let right_status = Line::from(
         vec![
             #[cfg(feature = "fps-counter")]
-            Span::styled(format!("FPS:{:.1}   ", fps), value_style),
+            Span::styled("FPS:", key_style),
+            #[cfg(feature = "fps-counter")]
+            Span::styled(format!("{:.1}   ", fps), value_style),
             Span::styled("RAM:", key_style),
             Span::styled(format!("{:.1}/{:.1} GiB",(sys.used_memory() as f64) / (1024.0 * 1024.0 * 1024.0), (sys.total_memory() as f64) / (1024.0 * 1024.0 * 1024.0)), value_style),
             Span::styled("   NAME:", key_style),
