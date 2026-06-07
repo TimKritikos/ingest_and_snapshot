@@ -177,6 +177,7 @@ impl Widget for DialogBlock<'_> {
         // fill background
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
+                buf[(x, y)].reset();
                 buf[(x, y)].set_style(fill);
             }
         }
@@ -252,7 +253,8 @@ impl Widget for DialogFloatingList<'_> {
         let clear_style = Style::default().bg(Color::Gray).fg(Color::Black);
         for y in picker_area.top()..picker_area.bottom() {
             for x in picker_area.left()..picker_area.right() {
-                buf[(x, y)].set_char(' ').set_style(clear_style);
+                buf[(x, y)].reset();
+                buf[(x, y)].set_style(clear_style);
             }
         }
 
@@ -262,7 +264,7 @@ impl Widget for DialogFloatingList<'_> {
 
         let item_style     = Style::default().fg(Color::Black);
         let selected_style = Style::default().fg(Color::White).bg(Color::Blue).add_modifier(Modifier::BOLD);
-        let current_style  = Style::default().fg(Color::Green);
+        let current_style  = Style::default().fg(Color::Green); //for the green tickmark
 
         let items_height = inner.height.saturating_sub(hint_rows);
 
