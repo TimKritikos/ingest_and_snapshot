@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time, process};
 use crate::ui_api;
 use crate::ui::TuiBackend;
-use crate::SourceMediaEntry;
+use crate::{SourceMediaEntry, CardNamingScheme};
 
 pub fn run() -> ! {
     let now_ms = || -> u64 {
@@ -22,6 +22,7 @@ pub fn run() -> ! {
                     device_model_name:        "ILCE-7M4".to_string(),
                     device_model_name_pretty: Some("A7 IV".to_string()),
                     serial_number:            "4710293".to_string(),
+                    new_card_naming_scheme:   CardNamingScheme::Card,
                     directory:                PathBuf::from("/media/source_media/sony_a7iv"),
                 },
                 SourceMediaEntry {
@@ -29,6 +30,7 @@ pub fn run() -> ! {
                     device_model_name:        "ILCE-7RM5".to_string(),
                     device_model_name_pretty: Some("A7R V".to_string()),
                     serial_number:            "8823015".to_string(),
+                    new_card_naming_scheme:   CardNamingScheme::Card,
                     directory:                PathBuf::from("/media/source_media/sony_a7rv"),
                 },
                 SourceMediaEntry {
@@ -36,6 +38,7 @@ pub fn run() -> ! {
                     device_model_name:        "EOS R5".to_string(),
                     device_model_name_pretty: None,
                     serial_number:            "083059002910".to_string(),
+                    new_card_naming_scheme:   CardNamingScheme::Card,
                     directory:                PathBuf::from("/media/source_media/canon_eos_r5"),
                 },
                 SourceMediaEntry {
@@ -43,6 +46,7 @@ pub fn run() -> ! {
                     device_model_name:        "GFX 100S".to_string(),
                     device_model_name_pretty: None,
                     serial_number:            "91007345".to_string(),
+                    new_card_naming_scheme:   CardNamingScheme::Freeform,
                     directory:                PathBuf::from("/media/source_media/fujifilm_gfx100s"),
                 },
                 SourceMediaEntry {
@@ -50,6 +54,7 @@ pub fn run() -> ! {
                     device_model_name:        "Z 9".to_string(),
                     device_model_name_pretty: Some("Z9".to_string()),
                     serial_number:            "3102948576".to_string(),
+                    new_card_naming_scheme:   CardNamingScheme::Card,
                     directory:                PathBuf::from("/media/source_media/nikon_z9"),
                 },
     ];
@@ -183,7 +188,7 @@ pub fn run() -> ! {
                 ui_scan.lock().unwrap().user_query(ui_api::UserQuery::ScanNewDevice(ui_api::ScanNewDeviceQuery {
                     device_name: "Unknown USB Camera".to_string(),
                     response_tx,
-                })).unwrap();
+                }), false).unwrap();
                 let _ = response_rx.recv();
             });
 
@@ -219,7 +224,7 @@ pub fn run() -> ! {
                     },
                     response_tx,
                     update_rx,
-                })).unwrap();
+                }), false).unwrap();
 
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
@@ -278,6 +283,7 @@ pub fn run() -> ! {
                             });
                             break;
                         }
+                        ui_api::ApproveTransferResponse::CardIdChanged(_) => {}
                         ui_api::ApproveTransferResponse::Denied => {
                             let _ = tx2.send(ui_api::TransferEvent::DeviceUnplugged);
                             break;
@@ -316,7 +322,7 @@ pub fn run() -> ! {
                         },
                         response_tx,
                         update_rx,
-                    })).unwrap();
+                    }), false).unwrap();
 
                     thread::spawn(move || {
                         while let Ok(response) = response_rx.recv() {
@@ -333,6 +339,7 @@ pub fn run() -> ! {
                                     };
                                     let _ = update_tx.send(update);
                                 }
+                                ui_api::ApproveTransferResponse::CardIdChanged(_) => {}
                                 ui_api::ApproveTransferResponse::Approved => {
                                     // TODO: start actual dummy transfer
                                     break;

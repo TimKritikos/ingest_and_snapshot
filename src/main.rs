@@ -39,6 +39,7 @@ use std::ffi::OsStr;
 mod ui;
 mod ui_api;
 mod transfer_logic;
+mod transfer_registry;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -85,12 +86,32 @@ struct SourceMediaUniqueIdentification {
     serial_number: String,
 }
 
+#[derive(Clone, Debug)]
+pub enum CardNamingScheme {
+    /// Sequential CARD#### IDs, auto-generated. JSON value: "CARD%04d"
+    Card,
+    /// User must always supply the ID manually. JSON value: "freeform"
+    Freeform,
+}
+
+impl<'de> serde::Deserialize<'de> for CardNamingScheme {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "CARD%04d" => Ok(CardNamingScheme::Card),
+            "freeform"  => Ok(CardNamingScheme::Freeform),
+            _ => Err(serde::de::Error::custom(format!("Unknown card naming scheme: '{}'", s))),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct SourceMediaInfo {
     device_make_name: String,
     device_model_name: String,
     device_model_name_pretty: Option<String>,
     device_unique_identification: SourceMediaUniqueIdentification,
+    new_card_naming_scheme: CardNamingScheme,
 }
 
 #[derive(Deserialize)]
@@ -110,6 +131,7 @@ struct SourceMediaEntry {
     device_model_name: String,
     device_model_name_pretty: Option<String>,
     serial_number: String,
+    new_card_naming_scheme: CardNamingScheme,
     directory: PathBuf, // The directory from which this source media configuration was loaded.
 }
 
@@ -351,6 +373,7 @@ fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<
             device_model_name:        config.source_media_info.device_model_name,
             device_model_name_pretty: config.source_media_info.device_model_name_pretty,
             serial_number:            config.source_media_info.device_unique_identification.serial_number,
+            new_card_naming_scheme:   config.source_media_info.new_card_naming_scheme,
             directory:                subdir.path(),
         });
     }
@@ -404,6 +427,8 @@ fn main() {
 
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> = Arc::new(Mutex::new(Box::new(tui_backend)));
 
+    let registry = Arc::new(Mutex::new(transfer_registry::PendingTransferRegistry::new()));
+
     ui.lock().unwrap().add_config(config.allow_device_list, config.ignore_device_list).unwrap();
 
     let devices_config: DevicesConfig = {
@@ -436,7 +461,7 @@ fn main() {
                 ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                     error: ui_api::FatalErrorKind::DevicesJson(msg),
                     response_tx,
-                })).unwrap();
+                }), true).unwrap();
                 let _ = response_rx.recv();
                 ui.lock().unwrap().quit().unwrap();
                 if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
@@ -452,7 +477,7 @@ fn main() {
             ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::SourceMedia(msg),
                 response_tx,
-            })).unwrap();
+            }), true).unwrap();
             let _ = response_rx.recv();
             ui.lock().unwrap().quit().unwrap();
             if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
@@ -465,7 +490,7 @@ fn main() {
         ui.lock().unwrap().user_query(ui_api::UserQuery::SourceMediaWarnings(ui_api::SourceMediaWarningsQuery {
             warnings: source_media_warnings,
             response_tx,
-        })).unwrap();
+        }), false).unwrap();
     }
 
     if source_media_entries.is_empty() {
@@ -476,7 +501,7 @@ fn main() {
                 media_dir.join(SOURCE_MEDIA_DIR_NAME).display()
             )),
             response_tx,
-        })).unwrap();
+        }), true).unwrap();
         let _ = response_rx.recv();
         ui.lock().unwrap().quit().unwrap();
         if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
@@ -492,7 +517,7 @@ fn main() {
             ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::BackupLog(msg),
                 response_tx,
-            })).unwrap();
+            }), true).unwrap();
             let _ = response_rx.recv();
             ui.lock().unwrap().quit().unwrap();
             if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
@@ -538,6 +563,7 @@ fn main() {
                 ui_api::UiToLogicMessage::StartManualTransfer => {
                     transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
+                        Arc::clone(&registry),
                         source_media_entries.clone(),
                         transfer_logic::DetectedTransferInfo {
                             source_media:  None,

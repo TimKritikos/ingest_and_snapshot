@@ -1,72 +1,321 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::time::Duration;
 use std::thread;
 use crate::ui_api::{self, UiBackend};
 use crate::SourceMediaEntry;
+use crate::CardNamingScheme;
+use crate::transfer_registry::{PendingTransferRegistry, PendingCardId, TransferId};
 
-//Detected info before the transfer starts
+const REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+// Detected info provided at transfer start
 pub struct DetectedTransferInfo {
-    pub source_media: Option<SourceMediaEntry>,
+    pub source_media: Option<SourceMediaEntry>, //TODO: this probably should be an Option<String>
     pub card_id: Option<String>,
     pub source_device: Option<String>,
 }
 
 pub fn spawn_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
+    registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
     detected: DetectedTransferInfo,
 ) {
     thread::spawn(move || {
-        run_transfer(ui, all_source_media, detected);
+        run_transfer(ui, registry, all_source_media, detected);
     });
 }
 
 fn run_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
+    registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
     detected: DetectedTransferInfo,
 ) {
-    let initial_source_media_dir = detected.source_media.as_ref()
-        .map(|e| e.directory.to_string_lossy().into_owned());
+    // Assign a unique ID for this transfer in the registry
+    let transfer_id: TransferId = registry.lock().unwrap().new_transfer_id();
 
-    // Step 1: Register the transfer in the UI
+    // Determine initial source media and card ID
+    let initial_source_media_dir = detected.source_media.as_ref()
+        .map(|e| e.directory.clone());
+
+    let mut current_source_media_dir: Option<PathBuf> = initial_source_media_dir.clone();
+    let mut card_id_manually_set = false;
+
+    // Compute the initial card ID and register with the registry
+    let mut current_card_id = match initial_card_id_and_register(
+        &registry,
+        transfer_id,
+        current_source_media_dir.as_deref(),
+        detected.card_id.as_deref(),
+        &all_source_media,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            show_card_id_error(&ui, None, format!("Failed to compute initial card ID: {}", e));
+            return;
+        }
+    };
+    if detected.card_id.is_some() {
+        card_id_manually_set = true; //TODO: not sure if we should handle this like that. maybe
+                                     //drop card_id from detected all-together
+    }
+
+    // Register the transfer in the UI
     let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
     if ui.lock().unwrap().new_transfer(
-        initial_source_media_dir,
+        current_source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
         transfer_event_rx,
-    ).is_err() { return; }
+    ).is_err() {
+        registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+        return;
+    }
 
-    // Step 2: Ask the user to approve and optionally pick a source media device
-    let initial_data = query_update_from_entry(
-        detected.source_media.as_ref(),
-        detected.source_device.unwrap_or_default(),
-        detected.card_id.unwrap_or_default(),
-        false,
-    );
+    // Track registry version to detect when other transfers update their card IDs
+    let mut last_known_version: u64 = current_source_media_dir.as_ref()
+        .map(|dir| registry.lock().unwrap().get_version(dir))
+        .unwrap_or(0);
 
-    let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
-    let (update_tx, update_rx) = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
-    if ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
-        data: initial_data,
-        response_tx,
-        update_rx,
-    })).is_err() { return; }
+    let mut is_re_approval = false; // becomes true after BackToQuery loops back
 
-    // Step 3: Process responses until the user approves or denies
-    while let Ok(response) = response_rx.recv() {
-        match response {
-            ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
-                if let Some(update) = build_overwrite_update(&all_source_media, directory_opt, &transfer_event_tx) {
-                    let _ = update_tx.send(update);
+    'approval_loop: loop {
+
+        // Create approve transfer window
+
+        let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
+        let (update_tx, update_rx)     = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+
+        let show_priority = is_re_approval;
+        if ui.lock().unwrap().user_query(
+            ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
+                data: query_update_from_state(
+                          &current_source_media_dir,
+                          &all_source_media,
+                          detected.source_device.as_deref().unwrap_or(""),
+                          &current_card_id,
+                          false,
+                      ),
+                response_tx,
+                update_rx,
+            }),
+            show_priority,
+        ).is_err() {
+            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+            return;
+        }
+
+        // Wait for approval, polling for registry version changes that may update card_id
+
+        let approved = loop {
+
+            // Check if the registry changed while we were waiting (another transfer changed its ID)
+            if let Some(dir) = &current_source_media_dir {
+                let scheme = source_media_scheme(dir, &all_source_media);
+                if let CardNamingScheme::Card = scheme {
+                    let current_version = registry.lock().unwrap().get_version(dir);
+                    if current_version != last_known_version && !card_id_manually_set {
+                        // Regenerate auto ID so we don't collide with newly registered transfers
+                        match registry.lock().unwrap().next_card_id(dir, transfer_id) {
+                            Ok(new_id) => {
+                                current_card_id = new_id.clone();
+                                registry.lock().unwrap().update_id(
+                                    transfer_id,
+                                    dir,
+                                    PendingCardId::Auto(new_id.clone()),
+                                );
+                                let _ = update_tx.send(query_update_from_state(
+                                    &current_source_media_dir,
+                                    &all_source_media,
+                                    detected.source_device.as_deref().unwrap_or(""),
+                                    &new_id,
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                show_card_id_error(&ui, None, format!("Failed to regenerate card ID: {}", e));
+                            }
+                        }
+                        last_known_version = current_version;
+                    }
                 }
             }
-            ui_api::ApproveTransferResponse::Approved => break,
-            ui_api::ApproveTransferResponse::Denied => {
-                let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+
+            match response_rx.recv_timeout(REGISTRY_POLL_INTERVAL) {
+                Ok(ui_api::ApproveTransferResponse::Approved) => break true,
+                Ok(ui_api::ApproveTransferResponse::Denied) => break false,
+                Ok(ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt)) => {
+                    handle_device_overwrite(
+                        &ui,
+                        &registry,
+                        transfer_id,
+                        &mut current_source_media_dir,
+                        &mut current_card_id,
+                        &mut card_id_manually_set,
+                        &mut last_known_version,
+                        directory_opt,
+                        &all_source_media,
+                        &transfer_event_tx,
+                        &update_tx,
+                        detected.source_device.as_deref().unwrap_or(""),
+                    );
+                }
+                Ok(ui_api::ApproveTransferResponse::CardIdChanged(new_id)) => {
+                    handle_card_id_changed(
+                        &ui,
+                        &registry,
+                        transfer_id,
+                        &mut current_card_id,
+                        &mut card_id_manually_set,
+                        current_source_media_dir.as_deref(),
+                        &all_source_media,
+                        new_id,
+                        &update_tx,
+                        detected.source_device.as_deref().unwrap_or(""),
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {} // re-check registry version
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+                    return;
+                }
+            }
+        };
+
+        if !approved {
+            let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+            return;
+        }
+
+        // User approved — acquire the approval lock and do TOCTOU-safe conflict check
+        let source_dir = match &current_source_media_dir {
+            Some(dir) => dir.clone(),
+            None => {
+                // No source media dir — nothing to check, proceed directly
+                break 'approval_loop;
+            }
+        };
+
+        let scheme = source_media_scheme(&source_dir, &all_source_media);
+
+        // For freeform: no sequential check; only check if the ID is taken
+        let approval_lock = registry.lock().unwrap().get_approval_lock(&source_dir);
+        let _lock_guard = approval_lock.as_ref().map(|l| l.lock().unwrap());
+
+        // Check if this card ID is taken on the filesystem
+        let is_taken = match PendingTransferRegistry::is_card_id_taken(&source_dir, &current_card_id) {
+            Ok(v) => v,
+            Err(e) => {
+                show_card_id_error(&ui, Some(&transfer_event_tx), format!("Error checking card ID: {}", e));
+                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
                 return;
             }
+        };
+
+        // For Card scheme: also check if there would be a sequence gap
+        let sequence_conflict = if matches!(scheme, CardNamingScheme::Card) && !is_taken {
+            match registry.lock().unwrap().next_card_id(&source_dir, transfer_id) {
+                Ok(next_sequential) => next_sequential != current_card_id,
+                Err(e) => {
+                    show_card_id_error(&ui, Some(&transfer_event_tx), format!("Error computing next card ID: {}", e));
+                    registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                    return;
+                }
+            }
+        } else {
+            false
+        };
+
+        if is_taken || sequence_conflict {
+            // Show conflict resolution dialog (priority, since it follows an approval)
+            let conflict_reason = if is_taken {
+                ui_api::CardIdConflictReason::IdTaken
+            } else {
+                ui_api::CardIdConflictReason::SequenceGap
+            };
+
+            // The "suggested" next sequential ID (UseNew option) —
+            // only offer UseNew if auto-generation is applicable and there IS a next ID to suggest
+            let suggested_id = if matches!(scheme, CardNamingScheme::Card) {
+                match registry.lock().unwrap().next_card_id(&source_dir, transfer_id) {
+                    Ok(next) if next != current_card_id || is_taken => Some(next),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            // UseNew is only offered when there's a suggestion and (auto OR gap case)
+            let offer_use_new = suggested_id.is_some() && (!card_id_manually_set || sequence_conflict);
+            let final_suggested = if offer_use_new { suggested_id.clone() } else { None };
+
+            let (conflict_tx, conflict_rx) = mpsc::channel::<ui_api::ConfirmCardIdResponse>();
+            if ui.lock().unwrap().user_query(
+                ui_api::UserQuery::ConfirmCardId(ui_api::ConfirmCardIdQuery {
+                    original_id: current_card_id.clone(),
+                    suggested_id: final_suggested,
+                    was_manually_set: card_id_manually_set,
+                    conflict_reason,
+                    response_tx: conflict_tx,
+                }),
+                true,
+            ).is_err() {
+                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                return;
+            }
+
+            match conflict_rx.recv() {
+                Ok(ui_api::ConfirmCardIdResponse::UseNew) => {
+                    if let Some(new_id) = suggested_id {
+                        current_card_id = new_id.clone();
+                        registry.lock().unwrap().update_id(
+                            transfer_id,
+                            &source_dir,
+                            PendingCardId::Auto(new_id),
+                        );
+                    }
+                    // Drop the lock, create the directory, then break
+                    drop(_lock_guard);
+                    if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
+                        show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
+                        registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                        return;
+                    }
+                    break 'approval_loop;
+                }
+                Ok(ui_api::ConfirmCardIdResponse::UseOriginal) => {
+                    // Lock held — original is still free (gap case only), create it
+                    drop(_lock_guard);
+                    if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
+                        show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
+                        registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                        return;
+                    }
+                    break 'approval_loop;
+                }
+                Ok(ui_api::ConfirmCardIdResponse::BackToQuery) | Err(_) => {
+                    // Drop lock, loop back to show ApproveTransfer again (with priority)
+                    drop(_lock_guard);
+                    is_re_approval = true;
+                    continue 'approval_loop;
+                }
+            }
+        } else {
+            // No conflict — create the card directory while still holding the lock
+            drop(_lock_guard);
+            if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
+                show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
+                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                return;
+            }
+            break 'approval_loop;
         }
     }
+
+    // Unregister from registry — card directory now exists on filesystem
+    registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
 
     // Step 4: Move the data
     // TODO
@@ -75,37 +324,237 @@ fn run_transfer(
     // TODO
 }
 
-fn build_overwrite_update(
-    source_media: &[SourceMediaEntry],
-    directory_opt: Option<String>,
-    transfer_event_tx: &mpsc::Sender<ui_api::TransferEvent>,
-) -> Option<ui_api::ApproveTransferQueryUpdate> {
-    let entry = match directory_opt {
-        Some(directory) => Some(
-            source_media.iter()
-                .find(|e| e.directory.to_string_lossy() == directory.as_str())?
-        ),
-        None => None,
+/// Determine the initial card ID and register the transfer with the registry.
+fn initial_card_id_and_register(
+    registry: &Arc<Mutex<PendingTransferRegistry>>,
+    transfer_id: TransferId,
+    source_dir: Option<&std::path::Path>,
+    detected_card_id: Option<&str>,
+    all_source_media: &[SourceMediaEntry],
+) -> Result<String, String> {
+    let dir = match source_dir {
+        Some(d) => d,
+        None => {
+            // No source media dir yet — use empty card ID, not registered
+            return Ok(String::new());
+        }
     };
-    let update = query_update_from_entry(entry, String::new(), String::new(), entry.is_some());
-    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
-        update.source_media_dir.clone(),
-    ));
-    Some(update)
+
+    let scheme = source_media_scheme(dir, all_source_media);
+
+    let (card_id, pending) = match detected_card_id {
+        Some(manual_id) if !manual_id.is_empty() => {
+            let scheme_number = if matches!(scheme, CardNamingScheme::Card) {
+                crate::transfer_registry::parse_card_number(manual_id)
+            } else {
+                None
+            };
+            (manual_id.to_owned(), PendingCardId::Manual { id: manual_id.to_owned(), scheme_number })
+        }
+        _ => match scheme {
+            CardNamingScheme::Card => {
+                let reg = registry.lock().unwrap();
+                let id = reg.next_card_id(dir, transfer_id)?;
+                (id.clone(), PendingCardId::Auto(id))
+            }
+            CardNamingScheme::Freeform => {
+                // Empty until user provides it
+                (String::new(), PendingCardId::Manual { id: String::new(), scheme_number: None })
+            }
+        },
+    };
+
+    registry.lock().unwrap().register(transfer_id, dir, pending);
+    Ok(card_id)
 }
 
-fn query_update_from_entry(
-    entry: Option<&SourceMediaEntry>,
-    source_device: String,
-    card_id: String,
+fn handle_device_overwrite(
+    ui: &Arc<Mutex<Box<dyn UiBackend>>>,
+    registry: &Arc<Mutex<PendingTransferRegistry>>,
+    transfer_id: TransferId,
+    current_source_media_dir: &mut Option<PathBuf>,
+    current_card_id: &mut String,
+    card_id_manually_set: &mut bool,
+    last_known_version: &mut u64,
+    directory_opt: Option<String>,
+    all_source_media: &[SourceMediaEntry],
+    transfer_event_tx: &mpsc::Sender<ui_api::TransferEvent>,
+    update_tx: &mpsc::Sender<ui_api::ApproveTransferQueryUpdate>,
+    source_device: &str,
+) {
+    let new_dir: Option<PathBuf> = directory_opt.as_deref()
+        .and_then(|dir_str| all_source_media.iter().find(|e| e.directory.to_string_lossy() == dir_str))
+        .map(|e| e.directory.clone());
+
+    // Determine the card ID to carry into the new source media entry.
+    // Manually set IDs are kept as-is; auto IDs are regenerated for the new dir.
+    let new_card_id = match new_dir.as_deref() {
+        Some(dir) => {
+            match source_media_scheme(dir, all_source_media) {
+                CardNamingScheme::Card if !*card_id_manually_set => {
+                    match registry.lock().unwrap().next_card_id(dir, transfer_id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            show_card_id_error(ui, None, format!("Failed to compute card ID for new device: {}", e));
+                            String::new()
+                        }
+                    }
+                }
+                _ => current_card_id.clone(), // keep existing
+            }
+        }
+        None => String::new(),
+    };
+
+    // Move the id in the registry from one source media to the other
+
+    let new_pending_card_id_data = if *card_id_manually_set {
+        PendingCardId::Manual {
+            id: new_card_id.clone(),
+            scheme_number: new_dir.as_deref()
+                .and_then(|_| crate::transfer_registry::parse_card_number(&new_card_id)),
+        }
+    } else {
+        PendingCardId::Auto(new_card_id.clone())
+    };
+
+    registry.lock().unwrap().move_source_media(
+        transfer_id,
+        current_source_media_dir.as_deref(),
+        new_dir.as_deref(),
+        new_pending_card_id_data,
+    );
+
+    // Update the caller's data
+    *current_source_media_dir = new_dir.clone();
+    *current_card_id = new_card_id.clone();
+    *last_known_version = new_dir.as_ref()
+        .map(|d| registry.lock().unwrap().get_version(d))
+        .unwrap_or(0);
+
+    // Update the transfer in the UI
+    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
+        new_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+    ));
+
+    // Update the user query in the UI
+    let _ = update_tx.send(query_update_from_state(
+        &new_dir,
+        all_source_media,
+        source_device,
+        &new_card_id,
+        true,
+    ));
+}
+
+fn handle_card_id_changed(
+    ui: &Arc<Mutex<Box<dyn UiBackend>>>,
+    registry: &Arc<Mutex<PendingTransferRegistry>>,
+    transfer_id: TransferId,
+    current_card_id: &mut String,
+    card_id_manually_set: &mut bool,
+    source_dir: Option<&std::path::Path>,
+    all_source_media: &[SourceMediaEntry],
+    new_id: String,
+    update_tx: &mpsc::Sender<ui_api::ApproveTransferQueryUpdate>,
+    source_device: &str,
+) {
+    let (final_id, pending, is_manual) = if new_id.is_empty() {
+        // IF empty revert to auto if scheme supports it
+        if let Some(dir) = source_dir {
+            if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::Card) {
+                match registry.lock().unwrap().next_card_id(dir, transfer_id) {
+                    Ok(auto_id) => {
+                        let pending = PendingCardId::Auto(auto_id.clone());
+                        (auto_id, pending, false)
+                    }
+                    Err(e) => {
+                        show_card_id_error(ui, None, format!("Failed to revert card ID to auto-generated: {}", e));
+                        (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+                    }
+                }
+            } else {
+                (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+            }
+        } else {
+            (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+        }
+    } else {
+        let scheme_number = source_dir
+            .and_then(|dir| {
+                if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::Card) {
+                    crate::transfer_registry::parse_card_number(&new_id)
+                } else {
+                    None
+                }
+            });
+        (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number }, true)
+    };
+
+    if let Some(dir) = source_dir {
+        registry.lock().unwrap().update_id(transfer_id, dir, pending);
+    }
+
+    *current_card_id = final_id.clone();
+    *card_id_manually_set = is_manual;
+
+    let current_source_media: Option<PathBuf> = source_dir.map(|d| d.to_owned());
+    let _ = update_tx.send(query_update_from_state(
+        &current_source_media,
+        all_source_media,
+        source_device,
+        &final_id,
+        false,
+    ));
+}
+
+fn source_media_scheme(dir: &std::path::Path, all_source_media: &[SourceMediaEntry]) -> CardNamingScheme {
+    all_source_media.iter()
+        .find(|e| e.directory == dir)
+        .map(|e| e.new_card_naming_scheme.clone())
+        .unwrap_or(CardNamingScheme::Freeform)
+}
+
+fn query_update_from_state(
+    source_media_dir: &Option<PathBuf>,
+    _all_source_media: &[SourceMediaEntry],
+    source_device: &str,
+    card_id: &str,
     device_overridden: bool,
 ) -> ui_api::ApproveTransferQueryUpdate {
     ui_api::ApproveTransferQueryUpdate {
-        source_media_dir: entry.map(|e| e.directory.to_string_lossy().into_owned()),
-        source_device,
+        source_media_dir: source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        source_device: source_device.to_owned(),
         transfer_function: String::new(),
-        data_size:         0,
-        card_id,
+        data_size: 0,
+        card_id: card_id.to_owned(),
         device_overridden,
     }
+}
+
+// Show a fatal card ID error dialog and optionally signal device unplugged.
+// Call this before unregistering and returning from run_transfer.
+fn show_card_id_error(
+    ui: &Arc<Mutex<Box<dyn UiBackend>>>,
+    transfer_event_tx: Option<&mpsc::Sender<ui_api::TransferEvent>>,
+    message: String,
+) {
+    let (response_tx, response_rx) = mpsc::channel::<()>();
+    let _ = ui.lock().unwrap().user_query(
+        ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            error: ui_api::FatalErrorKind::CardId(message),
+            response_tx,
+        }),
+        true,
+    );
+    let _ = response_rx.recv();
+    if let Some(tx) = transfer_event_tx {
+        let _ = tx.send(ui_api::TransferEvent::DeviceUnplugged);
+    }
+}
+
+fn create_card_directory(source_media_dir: &std::path::Path, card_id: &str) -> Result<(), String> {
+    let path = source_media_dir.join("DATA").join(card_id);
+    std::fs::create_dir_all(&path)
+        .map_err(|e| format!("Failed to create card directory {:?}: {}", path, e))
 }

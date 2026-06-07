@@ -44,7 +44,7 @@ enum LogicToUiMessage {
     AddConfig { allow: Vec<String>, ignore: Vec<String> },
     SetAvailableDevices(Vec<SourceMediaEntry>),
     NewTransfer { source_media_dir: Option<String>, rx_control: Receiver<TransferEvent> },
-    UserQuery(UserQuery),
+    UserQuery { query: UserQuery, priority: bool },
     Quit,
 }
 
@@ -75,8 +75,8 @@ impl UiBackend for TuiBackend {
     fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::NewTransfer { source_media_dir, rx_control }).map_err(|_| UiError::Disconnected)
     }
-    fn user_query(&mut self, query: UserQuery) -> Result<(), UiError> {
-        self.tx.send(LogicToUiMessage::UserQuery(query)).map_err(|_| UiError::Disconnected)
+    fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::UserQuery { query, priority }).map_err(|_| UiError::Disconnected)
     }
     fn quit(&mut self) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::Quit).map_err(|_| UiError::Disconnected)
@@ -175,11 +175,15 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                         rx_control,
                     });
                 }
-                LogicToUiMessage::UserQuery(q) => {
+                LogicToUiMessage::UserQuery { query: q, priority } => {
                     if query_queue.is_empty() {
                         query_state = user_queries_window::QueryWindowState::new();
                     }
-                    query_queue.push_back(q);
+                    if priority {
+                        query_queue.push_front(q);
+                    } else {
+                        query_queue.push_back(q);
+                    }
                 }
             }
         }

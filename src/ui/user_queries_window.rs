@@ -6,26 +6,41 @@ use ratatui::text::{Line, Span};
 use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
-use super::tui_dialog_widgets;
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery};
+use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse};
 use crate::SourceMediaEntry;
 
 pub struct QueryWindowState {
     pub device_picker_open: bool,
     pub device_picker_selection: usize,
     pub device_override: Option<SourceMediaEntry>,
+    pub card_id_entry: Option<TextEntryState>,
 }
 
 impl QueryWindowState {
     pub fn new() -> Self {
-        Self { device_picker_open: false, device_picker_selection: 0, device_override: None }
+        Self {
+            device_picker_open: false,
+            device_picker_selection: 0,
+            device_override: None,
+            card_id_entry: None,
+        }
     }
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
     match query_queue.front() {
         Some(UserQuery::ApproveTransfer(query)) => {
-            if state.device_picker_open {
+            if let Some(entry) = &mut state.card_id_entry {
+                match entry.handle_key(key.code) {
+                    TextEntryOutcome::Confirmed(new_id) => {
+                        let _ = query.response_tx.send(ApproveTransferResponse::CardIdChanged(new_id));
+                        state.card_id_entry = None;
+                    }
+                    TextEntryOutcome::Cancelled => { state.card_id_entry = None; }
+                    TextEntryOutcome::Editing   => {}
+                }
+            } else if state.device_picker_open {
                 let device_count = available_devices.map(|d| d.len() + 1).unwrap_or(1);
                 match key.code {
                     KeyCode::Up   => { state.device_picker_selection = state.device_picker_selection.saturating_sub(1); }
@@ -50,6 +65,9 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     KeyCode::Char('o') | KeyCode::Char('O') => {
                         state.device_picker_open = true;
                         state.device_picker_selection = 0;
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        state.card_id_entry = Some(TextEntryState::new(query.data.card_id.clone()));
                     }
                     KeyCode::Enter => {
                         if let Some(UserQuery::ApproveTransfer(query)) = query_queue.pop_front() {
@@ -100,6 +118,28 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::ConfirmCardId(query)) => {
+            let can_use_new      = query.suggested_id.is_some();
+            let can_use_original = !matches!(query.conflict_reason, CardIdConflictReason::IdTaken);
+            match key.code {
+                KeyCode::Char('n') | KeyCode::Char('N') if can_use_new => {
+                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(ConfirmCardIdResponse::UseNew);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Char('K') if can_use_original => {
+                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(ConfirmCardIdResponse::UseOriginal);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => {
+                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(ConfirmCardIdResponse::BackToQuery);
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -135,13 +175,20 @@ pub fn render(
     match query {
         UserQuery::ApproveTransfer(query) => {
             render_approve_transfer(frame, padded, query, state.device_override.as_ref(), available_devices);
-            if state.device_picker_open {
+            if let Some(entry) = &state.card_id_entry {
+                tui_dialog_widgets::TextEntry {
+                    title: "Set card ID",
+                    text: &entry.text,
+                    cursor_pos: entry.cursor,
+                }.render(frame.area(), frame.buffer_mut());
+            } else if state.device_picker_open {
                 render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
         UserQuery::FatalError(query) => render_fatal_error(frame, padded, query),
         UserQuery::SourceMediaWarnings(query) => render_source_media_warnings(frame, padded, query),
+        UserQuery::ConfirmCardId(query) => render_confirm_card_id(frame, padded, query),
     }
 }
 
@@ -205,12 +252,15 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     let hint = Style::default().fg(Color::Black);
     let ok   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
     let deny = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let act  = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("[Enter]", ok),
             Span::styled(" Approve   ", hint),
             Span::styled("[Esc]", deny),
-            Span::styled(" Deny", hint),
+            Span::styled(" Deny   ", hint),
+            Span::styled("[C]", act),
+            Span::styled(" Set card ID", hint),
         ])),
         rows[4],
     );
@@ -443,6 +493,7 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
         FatalErrorKind::DevicesJson(msg) => ("Failed to load data from devices.json", msg.as_str()),
         FatalErrorKind::SourceMedia(msg) => ("Failed to load source media configurations", msg.as_str()),
         FatalErrorKind::BackupLog(msg)   => ("Failed to load backup log", msg.as_str()),
+        FatalErrorKind::CardId(msg)      => ("Card ID handling error", msg.as_str()),
     };
 
     let rows = Layout::default()
@@ -625,6 +676,65 @@ fn render_source_media_warnings(frame: &mut Frame, area: Rect, query: &SourceMed
         ])),
         rows[4],
     );
+}
+
+fn render_confirm_card_id(frame: &mut Frame, area: Rect, query: &ConfirmCardIdQuery) {
+    let label   = Style::default().fg(Color::Black);
+    let value   = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let warning = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let hint    = Style::default().fg(Color::Black);
+    let ok      = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let deny    = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let act     = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    let can_use_new      = query.suggested_id.is_some();
+    let can_use_original = !matches!(query.conflict_reason, CardIdConflictReason::IdTaken);
+
+    let (reason_text, reason_style) = match query.conflict_reason {
+        CardIdConflictReason::IdTaken     => ("Card ID already exists on filesystem", warning),
+        CardIdConflictReason::SequenceGap => ("Card ID would create a gap in the sequence", warning),
+    };
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![Span::styled(reason_text, reason_style)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Current ID:  ", label),
+            Span::styled(query.original_id.as_str(), value),
+        ]),
+    ];
+
+    if let Some(ref suggested) = query.suggested_id {
+        lines.push(Line::from(vec![
+            Span::styled("Next seq ID: ", label),
+            Span::styled(suggested.as_str(), value),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    let mut button_spans: Vec<Span> = Vec::new();
+    if can_use_new {
+        button_spans.push(Span::styled("[N]", ok));
+        button_spans.push(Span::styled(" Use next ID   ", hint));
+    }
+    if can_use_original {
+        button_spans.push(Span::styled("[K]", act));
+        button_spans.push(Span::styled(" Keep original   ", hint));
+    }
+    button_spans.push(Span::styled("[B]", deny));
+    button_spans.push(Span::styled(" Back to query", hint));
+
+    lines.push(Line::from(button_spans));
+
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
 }
 
 fn render_scan_new_device(frame: &mut Frame, area: Rect, query: &ScanNewDeviceQuery) {

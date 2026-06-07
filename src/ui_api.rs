@@ -37,6 +37,26 @@ pub enum ApproveTransferResponse {
     Approved,
     Denied,
     DeviceOverwrite(Option<String>),
+    CardIdChanged(String),
+}
+
+pub struct ConfirmCardIdQuery {
+    pub original_id: String,
+    pub suggested_id: Option<String>, // The next sequential ID (UseNew option)
+    pub was_manually_set: bool,
+    pub conflict_reason: CardIdConflictReason,
+    pub response_tx: Sender<ConfirmCardIdResponse>,
+}
+
+pub enum CardIdConflictReason {
+    IdTaken,
+    SequenceGap,
+}
+
+pub enum ConfirmCardIdResponse {
+    UseNew,
+    UseOriginal,
+    BackToQuery,
 }
 
 pub struct ApproveTransferQueryUpdate {
@@ -63,6 +83,7 @@ pub enum FatalErrorKind {
     DevicesJson(String),
     SourceMedia(String),
     BackupLog(String),
+    CardId(String),
 }
 
 pub struct FatalErrorQuery {
@@ -81,6 +102,7 @@ pub enum UserQuery {
     FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
                                  //will be sent before any other message anyways so it doesn't matter
     SourceMediaWarnings(SourceMediaWarningsQuery),
+    ConfirmCardId(ConfirmCardIdQuery),
 }
 
 /// Messages the UI sends back to the main logic.
@@ -100,7 +122,7 @@ pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
     fn set_available_devices(&mut self, devices: Vec<crate::SourceMediaEntry>) -> Result<(), UiError>;
     fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
-    fn user_query(&mut self, query: UserQuery) -> Result<(), UiError>;
+    fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().
     fn join(self: Box<Self>);
