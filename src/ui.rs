@@ -93,6 +93,10 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut available_devices: Option<Vec<SourceMediaEntry>> = None;
     let mut actions_state = ActionsWindowState::new();
     let mut query_state = user_queries_window::QueryWindowState::new();
+    #[cfg(feature = "fps-counter")]
+    let mut frame_times: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
+    #[cfg(feature = "fps-counter")]
+    const FPS_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
     loop {
         // Process events on each transfer's control channel
@@ -132,8 +136,20 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
             }
         }
 
+        #[cfg(feature = "fps-counter")]
+        let fps = {
+            let now = std::time::Instant::now();
+            frame_times.push_back(now);
+            while frame_times.front().is_some_and(|t| now.duration_since(*t) > FPS_WINDOW) {
+                frame_times.pop_front();
+            }
+            frame_times.len() as f64 / FPS_WINDOW.as_secs_f64()
+        };
+
         terminal.draw(|frame| {
-            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref())
+            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref(),
+                #[cfg(feature = "fps-counter")] fps,
+            )
         })?;
 
         while let Ok(msg) = rx.try_recv() {
@@ -217,7 +233,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>) {
+fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>, #[cfg(feature = "fps-counter")] fps: f64) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -255,7 +271,7 @@ fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &V
         .split(layout[1]);
 
     // Status bars
-    status_bar::render(frame, layout[0]);
+    status_bar::render(frame, layout[0], #[cfg(feature = "fps-counter")] fps);
 
     // Windows
     let mut window_index = 0;

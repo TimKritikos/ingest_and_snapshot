@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 dummy-ui-data = []
+fps-counter = []
 
 [dependencies]
 anyhow = "1.0.102"
