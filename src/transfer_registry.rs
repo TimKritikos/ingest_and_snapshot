@@ -113,7 +113,7 @@ impl PendingTransferRegistry {
         exclude_transfer: TransferId,
     ) -> Result<String, String> {
         let data_dir = source_media_dir.join(DATA_SUBDIRECTORY);
-        let fs_max   = filesystem_max_card_number(&data_dir)?;
+        let fs_max   = filesystem_get_last_card_number(&data_dir)?;
 
         let registry_max = self.entries.get(source_media_dir)
             .map(|entry| {
@@ -164,9 +164,9 @@ pub fn parse_card_number(id: &str) -> Option<u32> {
     }
 }
 
-fn filesystem_max_card_number(data_dir: &Path) -> Result<u32, String> {
+/// Get the last numerical id present in the provided data direcotry assuming the CARD%04d scheme.
+fn filesystem_get_last_card_number(data_dir: &Path) -> Result<u32, String> {
     match std::fs::read_dir(data_dir) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(format!("Failed to read DATA directory {:?}: {}", data_dir, e)),
         Ok(entries) => {
             let mut max = 0u32;

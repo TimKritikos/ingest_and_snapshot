@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 #[test]
 fn test_format_card_id() {
@@ -25,4 +26,33 @@ fn test_parse_card_number() {
     assert_eq!(parse_card_number("CARD0"), None);
     assert_eq!(parse_card_number("CARD12"), None);
     assert_eq!(parse_card_number("CARD12345"), None);
+}
+
+#[test]
+fn test_filesystem_max_card_number_not_found() {
+    assert!(filesystem_get_last_card_number(Path::new("/n/o/n/e/x/i/s/t/e/n/t/p/a/t/h")).is_err());
+}
+
+#[test]
+fn test_filesystem_max_card_number_empty_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(0));
+}
+
+#[test]
+fn test_filesystem_max_card_number_returns_max() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("CARD0001")).unwrap();
+    std::fs::create_dir(dir.path().join("CARD0005")).unwrap();
+    std::fs::create_dir(dir.path().join("CARD0003")).unwrap();
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(5));
+}
+
+#[test]
+fn test_filesystem_max_card_number_ignores_non_card_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("CARD0002")).unwrap();
+    std::fs::create_dir(dir.path().join("notacard")).unwrap();
+    std::fs::create_dir(dir.path().join("CARD")).unwrap();
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(2));
 }
