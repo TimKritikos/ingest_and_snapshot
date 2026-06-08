@@ -179,7 +179,7 @@ fn run_transfer(
                                         transfer_id,
                                         &dir,
                                         PendingCardId::Auto(new_id.clone()),
-                                    );
+                                    ).expect("update_id: transfer must be registered before updating");
                                     let _ = update_tx.send(query_update_from_state(
                                         &current_source_media_dir,
                                         &all_source_media,
@@ -289,7 +289,7 @@ fn run_transfer(
                             transfer_id,
                             &source_dir,
                             PendingCardId::Auto(new_id),
-                        );
+                        ).expect("update_id: transfer must be registered before updating");
                     }
                     // Drop the lock, create the directory, then break
                     drop(_lock_guard);
@@ -497,7 +497,8 @@ fn handle_card_id_changed(
     };
 
     if let Some(dir) = source_dir {
-        registry.lock().unwrap().update_id(transfer_id, dir, pending);
+        registry.lock().unwrap().update_id(transfer_id, dir, pending)
+            .expect("update_id: transfer must be registered before updating");
     }
 
     *current_card_id = final_id.clone();

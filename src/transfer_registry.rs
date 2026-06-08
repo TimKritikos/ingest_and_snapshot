@@ -52,11 +52,15 @@ impl PendingTransferRegistry {
         self.notify_subscribers(source_media_dir);
     }
 
-    pub fn update_id(&mut self, transfer_id: TransferId, source_media_dir: &Path, card_id: PendingCardId) {
-        if let Some(entry) = self.entries.get_mut(source_media_dir) {
-            entry.transfers.insert(transfer_id, card_id);
+    pub fn update_id(&mut self, transfer_id: TransferId, source_media_dir: &Path, card_id: PendingCardId) -> Result<(), String> {
+        match self.entries.get_mut(source_media_dir) {
+            Some(entry) => {
+                entry.transfers.insert(transfer_id, card_id);
+                self.notify_subscribers(source_media_dir);
+                Ok(())
+            }
+            None => Err(format!("update_id called for unregistered source media dir {:?}", source_media_dir)),
         }
-        self.notify_subscribers(source_media_dir);
     }
 
     /// Move a transfer's registration from one source media dir to another.

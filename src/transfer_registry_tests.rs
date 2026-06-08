@@ -167,7 +167,7 @@ fn test_update_id_notifies_subscribers() {
     let id = registry.new_transfer_internal_id();
     registry.register(id, dir, PendingCardId::Auto("CARD0001".to_string()));
     let rx = registry.subscribe(dir);
-    registry.update_id(id, dir, PendingCardId::Auto("CARD0002".to_string()));
+    assert!(registry.update_id(id, dir, PendingCardId::Auto("CARD0002".to_string())).is_ok());
     assert!(rx.try_recv().is_ok());
     assert!(rx.try_recv().is_err()); // no extra notifications
 }
@@ -181,8 +181,20 @@ fn test_update_id_does_not_notify_subscribers_of_other_dirs() {
     registry.register(id, dir_a, PendingCardId::Auto("CARD0001".to_string()));
     let rx_a = registry.subscribe(dir_a);
     let rx_b = registry.subscribe(dir_b);
-    registry.update_id(id, dir_a, PendingCardId::Auto("CARD0002".to_string()));
+    assert!(registry.update_id(id, dir_a, PendingCardId::Auto("CARD0002".to_string())).is_ok());
     assert!(rx_a.try_recv().is_ok());
     assert!(rx_a.try_recv().is_err());
     assert!(rx_b.try_recv().is_err());
+}
+
+#[test]
+fn test_update_id_on_unregistered_dir_returns_error_and_does_not_notify() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir_registered = Path::new("/media/card_a");
+    let dir_unknown    = Path::new("/media/card_b");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir_registered, PendingCardId::Auto("CARD0001".to_string()));
+    let rx = registry.subscribe(dir_registered);
+    assert!(registry.update_id(id, dir_unknown, PendingCardId::Auto("CARD0002".to_string())).is_err());
+    assert!(rx.try_recv().is_err()); // registered dir was not notified
 }
