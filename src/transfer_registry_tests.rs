@@ -116,6 +116,24 @@ fn test_register_second_transfer_sends_second_notification() {
 }
 
 #[test]
+fn test_register_multiple_transfers_send_their_notification() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let rx = registry.subscribe(dir);
+    let id1 = registry.new_transfer_internal_id();
+    let id2 = registry.new_transfer_internal_id();
+    for i in 0..100 {
+        registry.register(id1, dir, PendingCardId::Auto(format_card_id(i).unwrap()));
+    }
+    for i in 0..100 {
+        assert!(rx.try_recv().is_ok());
+    }
+    for i in 0..100 {
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
 fn test_register_does_not_notify_subscribers_of_other_dirs() {
     let mut registry = PendingTransferRegistry::new();
     let dir_a = Path::new("/media/card_a");
@@ -140,4 +158,31 @@ fn test_register_two_transfers_share_approval_lock() {
     let lock1 = registry.get_approval_lock(dir).unwrap();
     let lock2 = registry.get_approval_lock(dir).unwrap();
     assert!(std::sync::Arc::ptr_eq(&lock1, &lock2));
+}
+
+#[test]
+fn test_update_id_notifies_subscribers() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir, PendingCardId::Auto("CARD0001".to_string()));
+    let rx = registry.subscribe(dir);
+    registry.update_id(id, dir, PendingCardId::Auto("CARD0002".to_string()));
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_err()); // no extra notifications
+}
+
+#[test]
+fn test_update_id_does_not_notify_subscribers_of_other_dirs() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir_a = Path::new("/media/card_a");
+    let dir_b = Path::new("/media/card_b");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir_a, PendingCardId::Auto("CARD0001".to_string()));
+    let rx_a = registry.subscribe(dir_a);
+    let rx_b = registry.subscribe(dir_b);
+    registry.update_id(id, dir_a, PendingCardId::Auto("CARD0002".to_string()));
+    assert!(rx_a.try_recv().is_ok());
+    assert!(rx_a.try_recv().is_err());
+    assert!(rx_b.try_recv().is_err());
 }
