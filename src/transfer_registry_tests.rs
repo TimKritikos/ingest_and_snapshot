@@ -30,7 +30,9 @@ fn test_parse_card_number() {
 
 #[test]
 fn test_filesystem_max_card_number_not_found() {
-    assert!(filesystem_get_last_card_number(Path::new("/n/o/n/e/x/i/s/t/e/n/t/p/a/t/h")).is_err());
+    let temp = tempfile::tempdir().unwrap();
+    let missing_dir = temp.path().join("definitely-not-created");
+    assert!(filesystem_get_last_card_number(&missing_dir).is_err());
 }
 
 #[test]
@@ -58,7 +60,7 @@ fn test_filesystem_max_card_number_ignores_non_card_entries() {
 }
 
 #[test]
-fn test_registry_new_transfer_ids_are_unique() {
+fn test_registry_new_transfer_internal_ids_are_unique() {
     const N: usize = 10000;
     let mut registry = PendingTransferRegistry::new();
     let ids: Vec<TransferId> = (0..N).map(|_| registry.new_transfer_internal_id()).collect();
