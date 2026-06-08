@@ -157,7 +157,11 @@ pub fn format_card_id(number: u32) -> Result<String, String> {
 /// Parse a CARD#### number from an ID string. Returns None if the string doesn't
 /// start with the CARD prefix or the suffix isn't a pure decimal integer.
 pub fn parse_card_number(id: &str) -> Option<u32> {
-    id.strip_prefix(CARD_PREFIX)?.parse().ok()
+    if id.len() == CARD_PREFIX.len()+4 {
+        id.strip_prefix(CARD_PREFIX)?.parse().ok()
+    } else {
+        None
+    }
 }
 
 fn filesystem_max_card_number(data_dir: &Path) -> Result<u32, String> {

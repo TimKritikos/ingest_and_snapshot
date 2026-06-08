@@ -11,3 +11,18 @@ fn test_format_card_id() {
     assert!(format_card_id(10001).is_err());
     assert!(format_card_id(u32::MAX).is_err());
 }
+
+#[test]
+fn test_parse_card_number() {
+    assert_eq!(parse_card_number("CARD0123").unwrap(), 123);
+    assert_eq!(parse_card_number("CARD0000").unwrap(), 0);
+    assert_eq!(parse_card_number("notacard"), None);
+    assert_eq!(parse_card_number("CARD"), None);
+    assert_eq!(parse_card_number(""), None);
+    assert_eq!(parse_card_number("card1234"), None);
+    assert_eq!(parse_card_number("CARDOOO1"), None);
+    assert_eq!(parse_card_number("CARD0000a"), None);
+    assert_eq!(parse_card_number("CARD0"), None);
+    assert_eq!(parse_card_number("CARD12"), None);
+    assert_eq!(parse_card_number("CARD12345"), None);
+}
