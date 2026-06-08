@@ -1,14 +1,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc;
-use std::time::Duration;
 use std::thread;
+use crossbeam_channel;
 use crate::ui_api::{self, UiBackend};
 use crate::SourceMediaEntry;
 use crate::CardNamingScheme;
 use crate::transfer_registry::{PendingTransferRegistry, PendingCardId, TransferId};
-
-const REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 // Detected info provided at transfer start
 pub struct DetectedTransferInfo {
@@ -64,7 +61,7 @@ fn run_transfer(
     }
 
     // Register the transfer in the UI
-    let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
+    let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
     if ui.lock().unwrap().new_transfer(
         current_source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
         transfer_event_rx,
@@ -73,10 +70,11 @@ fn run_transfer(
         return;
     }
 
-    // Track registry version to detect when other transfers update their card IDs
-    let mut last_known_version: u64 = current_source_media_dir.as_ref()
-        .map(|dir| registry.lock().unwrap().get_version(dir))
-        .unwrap_or(0);
+    // Subscribe to registry change notifications for our source media dir.
+    // When another transfer registers or changes its card ID, we get notified immediately
+    // `never()` is used when there is no source media dir — it
+    // acts as an inert branch in select! that never fires.
+    let mut notify_rx = subscribe_or_never(&registry, current_source_media_dir.as_deref());
 
     let mut is_re_approval = false; // becomes true after BackToQuery loops back
 
@@ -84,8 +82,8 @@ fn run_transfer(
 
         // Create approve transfer window
 
-        let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
-        let (update_tx, update_rx)     = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+        let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
+        let (update_tx, update_rx)     = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
 
         let show_priority = is_re_approval;
         if ui.lock().unwrap().user_query(
@@ -106,79 +104,80 @@ fn run_transfer(
             return;
         }
 
-        // Wait for approval, polling for registry version changes that may update card_id
-
+        // Wait for approval. Select simultaneously on the UI response channel and the
+        // registry notification channel so we react instantly to either.
         let approved = loop {
-
-            // Check if the registry changed while we were waiting (another transfer changed its ID)
-            if let Some(dir) = &current_source_media_dir {
-                let scheme = source_media_scheme(dir, &all_source_media);
-                if let CardNamingScheme::Card = scheme {
-                    let current_version = registry.lock().unwrap().get_version(dir);
-                    if current_version != last_known_version && !card_id_manually_set {
-                        // Regenerate auto ID so we don't collide with newly registered transfers
-                        match registry.lock().unwrap().next_card_id(dir, transfer_id) {
-                            Ok(new_id) => {
-                                current_card_id = new_id.clone();
-                                registry.lock().unwrap().update_id(
-                                    transfer_id,
-                                    dir,
-                                    PendingCardId::Auto(new_id.clone()),
-                                );
-                                let _ = update_tx.send(query_update_from_state(
-                                    &current_source_media_dir,
-                                    &all_source_media,
-                                    detected.source_device.as_deref().unwrap_or(""),
-                                    &new_id,
-                                    false,
-                                ));
-                            }
-                            Err(e) => {
-                                show_card_id_error(&ui, None, format!("Failed to regenerate card ID: {}", e));
-                            }
+            crossbeam_channel::select! {
+                recv(response_rx) -> msg => {
+                    match msg {
+                        Ok(ui_api::ApproveTransferResponse::Approved) => break true,
+                        Ok(ui_api::ApproveTransferResponse::Denied) => break false,
+                        Ok(ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt)) => {
+                            handle_device_overwrite(
+                                &ui,
+                                &registry,
+                                transfer_id,
+                                &mut current_source_media_dir,
+                                &mut current_card_id,
+                                &mut card_id_manually_set,
+                                directory_opt,
+                                &all_source_media,
+                                &transfer_event_tx,
+                                &update_tx,
+                                detected.source_device.as_deref().unwrap_or(""),
+                                &mut notify_rx,
+                            );
                         }
-                        last_known_version = current_version;
+                        Ok(ui_api::ApproveTransferResponse::CardIdChanged(new_id)) => {
+                            handle_card_id_changed(
+                                &ui,
+                                &registry,
+                                transfer_id,
+                                &mut current_card_id,
+                                &mut card_id_manually_set,
+                                current_source_media_dir.as_deref(),
+                                &all_source_media,
+                                new_id,
+                                &update_tx,
+                                detected.source_device.as_deref().unwrap_or(""),
+                            );
+                        }
+                        Err(_) => {
+                            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+                            return;
+                        }
                     }
                 }
-            }
-
-            match response_rx.recv_timeout(REGISTRY_POLL_INTERVAL) {
-                Ok(ui_api::ApproveTransferResponse::Approved) => break true,
-                Ok(ui_api::ApproveTransferResponse::Denied) => break false,
-                Ok(ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt)) => {
-                    handle_device_overwrite(
-                        &ui,
-                        &registry,
-                        transfer_id,
-                        &mut current_source_media_dir,
-                        &mut current_card_id,
-                        &mut card_id_manually_set,
-                        &mut last_known_version,
-                        directory_opt,
-                        &all_source_media,
-                        &transfer_event_tx,
-                        &update_tx,
-                        detected.source_device.as_deref().unwrap_or(""),
-                    );
-                }
-                Ok(ui_api::ApproveTransferResponse::CardIdChanged(new_id)) => {
-                    handle_card_id_changed(
-                        &ui,
-                        &registry,
-                        transfer_id,
-                        &mut current_card_id,
-                        &mut card_id_manually_set,
-                        current_source_media_dir.as_deref(),
-                        &all_source_media,
-                        new_id,
-                        &update_tx,
-                        detected.source_device.as_deref().unwrap_or(""),
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {} // re-check registry version
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
-                    return;
+                recv(notify_rx) -> result => {
+                    if result.is_err() {
+                        // Sender dropped — replace with a never-receiver to avoid a busy loop
+                        notify_rx = crossbeam_channel::never();
+                    } else if let Some(dir) = current_source_media_dir.clone() {
+                        if matches!(source_media_scheme(&dir, &all_source_media), CardNamingScheme::Card)
+                            && !card_id_manually_set
+                        {
+                            match registry.lock().unwrap().next_card_id(&dir, transfer_id) {
+                                Ok(new_id) => {
+                                    current_card_id = new_id.clone();
+                                    registry.lock().unwrap().update_id(
+                                        transfer_id,
+                                        &dir,
+                                        PendingCardId::Auto(new_id.clone()),
+                                    );
+                                    let _ = update_tx.send(query_update_from_state(
+                                        &current_source_media_dir,
+                                        &all_source_media,
+                                        detected.source_device.as_deref().unwrap_or(""),
+                                        &new_id,
+                                        false,
+                                    ));
+                                }
+                                Err(e) => {
+                                    show_card_id_error(&ui, None, format!("Failed to regenerate card ID: {}", e));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         };
@@ -251,7 +250,7 @@ fn run_transfer(
             let offer_use_new = suggested_id.is_some() && (!card_id_manually_set || sequence_conflict);
             let final_suggested = if offer_use_new { suggested_id.clone() } else { None };
 
-            let (conflict_tx, conflict_rx) = mpsc::channel::<ui_api::ConfirmCardIdResponse>();
+            let (conflict_tx, conflict_rx) = crossbeam_channel::unbounded::<ui_api::ConfirmCardIdResponse>();
             if ui.lock().unwrap().user_query(
                 ui_api::UserQuery::ConfirmCardId(ui_api::ConfirmCardIdQuery {
                     original_id: current_card_id.clone(),
@@ -375,12 +374,12 @@ fn handle_device_overwrite(
     current_source_media_dir: &mut Option<PathBuf>,
     current_card_id: &mut String,
     card_id_manually_set: &mut bool,
-    last_known_version: &mut u64,
     directory_opt: Option<String>,
     all_source_media: &[SourceMediaEntry],
-    transfer_event_tx: &mpsc::Sender<ui_api::TransferEvent>,
-    update_tx: &mpsc::Sender<ui_api::ApproveTransferQueryUpdate>,
+    transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
+    update_tx: &crossbeam_channel::Sender<ui_api::ApproveTransferQueryUpdate>,
     source_device: &str,
+    notify_rx: &mut crossbeam_channel::Receiver<()>,
 ) {
     let new_dir: Option<PathBuf> = directory_opt.as_deref()
         .and_then(|dir_str| all_source_media.iter().find(|e| e.directory.to_string_lossy() == dir_str))
@@ -418,19 +417,20 @@ fn handle_device_overwrite(
         PendingCardId::Auto(new_card_id.clone())
     };
 
-    registry.lock().unwrap().move_source_media(
-        transfer_id,
-        current_source_media_dir.as_deref(),
-        new_dir.as_deref(),
-        new_pending_card_id_data,
-    );
+    // Move registry entry and re-subscribe to the new dir atomically
+    let new_notify_rx = {
+        let mut reg = registry.lock().unwrap();
+        reg.move_source_media(transfer_id, current_source_media_dir.as_deref(), new_dir.as_deref(), new_pending_card_id_data);
+        match new_dir.as_deref() {
+            Some(dir) => reg.subscribe(dir),
+            None => crossbeam_channel::never(),
+        }
+    };
+    *notify_rx = new_notify_rx;
 
     // Update the caller's data
     *current_source_media_dir = new_dir.clone();
     *current_card_id = new_card_id.clone();
-    *last_known_version = new_dir.as_ref()
-        .map(|d| registry.lock().unwrap().get_version(d))
-        .unwrap_or(0);
 
     // Update the transfer in the UI
     let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
@@ -456,7 +456,7 @@ fn handle_card_id_changed(
     source_dir: Option<&std::path::Path>,
     all_source_media: &[SourceMediaEntry],
     new_id: String,
-    update_tx: &mpsc::Sender<ui_api::ApproveTransferQueryUpdate>,
+    update_tx: &crossbeam_channel::Sender<ui_api::ApproveTransferQueryUpdate>,
     source_device: &str,
 ) {
     let (final_id, pending, is_manual) = if new_id.is_empty() {
@@ -536,10 +536,10 @@ fn query_update_from_state(
 // Call this before unregistering and returning from run_transfer.
 fn show_card_id_error(
     ui: &Arc<Mutex<Box<dyn UiBackend>>>,
-    transfer_event_tx: Option<&mpsc::Sender<ui_api::TransferEvent>>,
+    transfer_event_tx: Option<&crossbeam_channel::Sender<ui_api::TransferEvent>>,
     message: String,
 ) {
-    let (response_tx, response_rx) = mpsc::channel::<()>();
+    let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
     let _ = ui.lock().unwrap().user_query(
         ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
             error: ui_api::FatalErrorKind::CardId(message),
@@ -551,6 +551,14 @@ fn show_card_id_error(
     if let Some(tx) = transfer_event_tx {
         let _ = tx.send(ui_api::TransferEvent::DeviceUnplugged);
     }
+}
+
+fn subscribe_or_never(
+    registry: &Arc<Mutex<PendingTransferRegistry>>,
+    dir: Option<&std::path::Path>,
+) -> crossbeam_channel::Receiver<()> {
+    dir.map(|d| registry.lock().unwrap().subscribe(d))
+       .unwrap_or_else(crossbeam_channel::never)
 }
 
 fn create_card_directory(source_media_dir: &std::path::Path, card_id: &str) -> Result<(), String> {

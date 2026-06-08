@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc;
+use crossbeam_channel;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time, process};
@@ -12,7 +12,7 @@ pub fn run() -> ! {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
     };
 
-    let (ui_to_logic_tx, ui_to_logic_rx) = mpsc::channel::<ui_api::UiToLogicMessage>();
+    let (ui_to_logic_tx, ui_to_logic_rx) = crossbeam_channel::unbounded::<ui_api::UiToLogicMessage>();
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> =
         Arc::new(Mutex::new(Box::new(TuiBackend::new(ui_to_logic_tx))));
 
@@ -59,9 +59,9 @@ pub fn run() -> ! {
                 },
     ];
 
-    let (cancel_tx_outer,   cancel_rx_outer)   = mpsc::channel::<()>();
-    let (cancel_tx_approve, cancel_rx_approve) = mpsc::channel::<()>();
-    let (cancel_tx_scan,    cancel_rx_scan)    = mpsc::channel::<()>();
+    let (cancel_tx_outer,   cancel_rx_outer)   = crossbeam_channel::unbounded::<()>();
+    let (cancel_tx_approve, cancel_rx_approve) = crossbeam_channel::unbounded::<()>();
+    let (cancel_tx_scan,    cancel_rx_scan)    = crossbeam_channel::unbounded::<()>();
     let cancel_senders = vec![cancel_tx_outer, cancel_tx_approve, cancel_tx_scan];
 
     {
@@ -69,14 +69,14 @@ pub fn run() -> ! {
         let dummy_source_media = dummy_source_media.clone();
         thread::spawn(move || {
             match cancel_rx_outer.recv_timeout(time::Duration::from_millis(300)) {
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 _ => return,
             }
 
             ui.lock().unwrap().set_available_devices(dummy_source_media.clone()).unwrap();
 
             // Transfer 1: historical finished transfer (simulating a restore from saved state)
-            let (tx1, rx1) = mpsc::channel::<ui_api::TransferEvent>();
+            let (tx1, rx1) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
                 Some("/media/source_media/sony_a7iv".to_string()),
                 rx1,
@@ -101,7 +101,7 @@ pub fn run() -> ! {
             // Transfer 4: two-phase speed test — live, visually verify x-axis is % completion.
             // First half of data at 15 MB/s (slow), second half at 120 MB/s (fast).
             // The left half of the chart should have short bars, right half tall bars.
-            let (tx4, rx4) = mpsc::channel::<ui_api::TransferEvent>();
+            let (tx4, rx4) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
                 Some("/media/source_media/canon_eos_r5".to_string()),
                 rx4,
@@ -132,7 +132,7 @@ pub fn run() -> ! {
             });
 
             // Transfer 3: live in-progress — 50 samples/sec with varied speed
-            let (tx3, rx3) = mpsc::channel::<ui_api::TransferEvent>();
+            let (tx3, rx3) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
             ui.lock().unwrap().new_transfer(
                 Some("/media/source_media/fujifilm_gfx100s".to_string()),
                 rx3,
@@ -181,10 +181,10 @@ pub fn run() -> ! {
             let ui_scan = Arc::clone(&ui);
             thread::spawn(move || {
                 match cancel_rx_scan.recv_timeout(time::Duration::from_secs(10)) {
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                     _ => return,
                 }
-                let (response_tx, response_rx) = mpsc::channel::<bool>();
+                let (response_tx, response_rx) = crossbeam_channel::unbounded::<bool>();
                 ui_scan.lock().unwrap().user_query(ui_api::UserQuery::ScanNewDevice(ui_api::ScanNewDeviceQuery {
                     device_name: "Unknown USB Camera".to_string(),
                     response_tx,
@@ -200,18 +200,18 @@ pub fn run() -> ! {
                 };
 
                 match cancel_rx_approve.recv_timeout(time::Duration::from_secs(5)) {
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                     _ => return,
                 }
 
-                let (tx2, rx2) = mpsc::channel::<ui_api::TransferEvent>();
+                let (tx2, rx2) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                 ui_approve.lock().unwrap().new_transfer(
                     Some("/media/source_media/nikon_z9".to_string()),
                     rx2,
                 ).unwrap();
 
-                let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
-                let (update_tx,   update_rx)   = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+                let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
+                let (update_tx,   update_rx)   = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
 
                 ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                     data: ui_api::ApproveTransferQueryUpdate {
@@ -303,14 +303,14 @@ pub fn run() -> ! {
                     break;
                 }
                 ui_api::UiToLogicMessage::StartManualTransfer => {
-                    let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
+                    let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                     ui.lock().unwrap().new_transfer(
                         None,
                         transfer_event_rx,
                     ).unwrap();
 
-                    let (response_tx, response_rx) = mpsc::channel::<ui_api::ApproveTransferResponse>();
-                    let (update_tx, update_rx) = mpsc::channel::<ui_api::ApproveTransferQueryUpdate>();
+                    let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
+                    let (update_tx, update_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
                     ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                         data: ui_api::ApproveTransferQueryUpdate {
                             source_media_dir:  None,

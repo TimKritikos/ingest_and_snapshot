@@ -67,9 +67,10 @@ fn test_registry_new_transfer_ids_are_unique() {
 }
 
 #[test]
-fn test_registry_new_version_is_zero_for_unregistered_dir() {
-    let registry = PendingTransferRegistry::new();
-    assert_eq!(registry.get_version(Path::new("/some/dir")), 0);
+fn test_registry_subscribe_no_pending_notifications_on_fresh_registry() {
+    let mut registry = PendingTransferRegistry::new();
+    let rx = registry.subscribe(Path::new("/some/dir"));
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]

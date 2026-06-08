@@ -19,7 +19,7 @@
 
 /// This module defines the protocol between the main application logic and any UI backend.
 
-use std::sync::mpsc::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender};
 
 pub struct TransferSample {
     pub timestamp_ms: u64,

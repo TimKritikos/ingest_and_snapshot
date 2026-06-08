@@ -9,6 +9,7 @@ fps-counter = []
 
 [dependencies]
 anyhow = "1.0.102"
+crossbeam-channel = "0.5"
 clap = { version = "4.5.60", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

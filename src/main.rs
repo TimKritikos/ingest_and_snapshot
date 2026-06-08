@@ -26,7 +26,7 @@ use std::env;
 use std::fs::File;
 use std::{thread, time};
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{self, Sender};
+use crossbeam_channel::{self, Sender};
 use clap::Parser;
 use home::home_dir;
 use anyhow::{Result};
@@ -422,7 +422,7 @@ fn main() {
 
     let config = parse_config_file(config_file_path).unwrap();
 
-    let (ui_to_logic_tx, ui_to_logic_rx) = mpsc::channel::<ui_api::UiToLogicMessage>();
+    let (ui_to_logic_tx, ui_to_logic_rx) = crossbeam_channel::unbounded::<ui_api::UiToLogicMessage>();
     let tui_backend = ui::TuiBackend::new(ui_to_logic_tx);
 
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> = Arc::new(Mutex::new(Box::new(tui_backend)));
@@ -457,7 +457,7 @@ fn main() {
         match result {
             Ok(dc) => dc,
             Err(msg) => {
-                let (response_tx, response_rx) = mpsc::channel::<()>();
+                let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
                 ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                     error: ui_api::FatalErrorKind::DevicesJson(msg),
                     response_tx,
@@ -473,7 +473,7 @@ fn main() {
     let (source_media_entries, source_media_warnings) = match scan_source_media(&media_dir) {
         Ok(result) => result,
         Err(msg) => {
-            let (response_tx, response_rx) = mpsc::channel::<()>();
+            let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
             ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::SourceMedia(msg),
                 response_tx,
@@ -486,7 +486,7 @@ fn main() {
     };
 
     if !source_media_warnings.is_empty() {
-        let (response_tx, _response_rx) = mpsc::channel::<()>();
+        let (response_tx, _response_rx) = crossbeam_channel::unbounded::<()>();
         ui.lock().unwrap().user_query(ui_api::UserQuery::SourceMediaWarnings(ui_api::SourceMediaWarningsQuery {
             warnings: source_media_warnings,
             response_tx,
@@ -494,7 +494,7 @@ fn main() {
     }
 
     if source_media_entries.is_empty() {
-        let (response_tx, response_rx) = mpsc::channel::<()>();
+        let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
         ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
             error: ui_api::FatalErrorKind::SourceMedia(format!(
                 "{}: no valid source media configurations found",
@@ -513,7 +513,7 @@ fn main() {
     let backup_log_state = match load_backup_log(&media_dir) {
         Ok(state) => state,
         Err(msg) => {
-            let (response_tx, response_rx) = mpsc::channel::<()>();
+            let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
             ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
                 error: ui_api::FatalErrorKind::BackupLog(msg),
                 response_tx,
@@ -532,7 +532,7 @@ fn main() {
                     .find(|sme| media_dir.join(&transfer.card_path).starts_with(&sme.directory))
                     .map(|sme| sme.directory.to_string_lossy().into_owned()); //TODO: report to the user if it didn't get found
 
-                let (transfer_event_tx, transfer_event_rx) = mpsc::channel::<ui_api::TransferEvent>();
+                let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                 ui.lock().unwrap().new_transfer(source_media_dir, transfer_event_rx).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
@@ -583,7 +583,7 @@ fn main() {
                 let links = devlinks.to_string_lossy();
                 for link in links.split_whitespace() {
                     if link.contains("/dev/disk/by-id/") {
-                        let (tx_control, rx_control) = mpsc::channel::<ui_api::TransferEvent>();
+                        let (tx_control, rx_control) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                         device_senders.insert(syspath.clone(), tx_control);
                         ui.lock().unwrap().new_transfer(None, rx_control).unwrap();
                         break;

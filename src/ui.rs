@@ -1,9 +1,7 @@
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 use std::thread;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
+use crossbeam_channel::{self, Receiver, Sender};
 use ratatui::DefaultTerminal;
 use sysinfo::System;
 use ratatui::Frame;
@@ -56,7 +54,7 @@ pub struct TuiBackend {
 
 impl TuiBackend {
     pub fn new(ui_to_logic_tx: Sender<UiToLogicMessage>) -> TuiBackend {
-        let (tx, rx) = mpsc::channel::<LogicToUiMessage>();
+        let (tx, rx) = crossbeam_channel::unbounded::<LogicToUiMessage>();
         color_eyre::install().unwrap();
         let handle = thread::spawn(|| {
             ratatui::run(|terminal| { app(terminal, rx, ui_to_logic_tx) }).unwrap();

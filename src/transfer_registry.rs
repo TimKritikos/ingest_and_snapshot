@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use crossbeam_channel;
 
 const CARD_PREFIX: &str = "CARD";
 const CARD_NUMBER_WIDTH: usize = 4;
@@ -18,7 +19,7 @@ pub enum PendingCardId {
 
 struct SourceMediaPending {
     transfers: HashMap<TransferId, PendingCardId>,
-    version: u64,
+    subscribers: Vec<crossbeam_channel::Sender<()>>,
     approval_lock: Arc<Mutex<()>>,
 }
 
@@ -44,18 +45,18 @@ impl PendingTransferRegistry {
     pub fn register(&mut self, transfer_id: TransferId, source_media_dir: &Path, card_id: PendingCardId) {
         let entry = self.entries.entry(source_media_dir.to_owned()).or_insert_with(|| SourceMediaPending {
             transfers: HashMap::new(),
-            version: 0,
+            subscribers: Vec::new(),
             approval_lock: Arc::new(Mutex::new(())),
         });
         entry.transfers.insert(transfer_id, card_id);
-        entry.version += 1;
+        self.notify_subscribers(source_media_dir);
     }
 
     pub fn update_id(&mut self, transfer_id: TransferId, source_media_dir: &Path, card_id: PendingCardId) {
         if let Some(entry) = self.entries.get_mut(source_media_dir) {
             entry.transfers.insert(transfer_id, card_id);
-            entry.version += 1;
         }
+        self.notify_subscribers(source_media_dir);
     }
 
     /// Move a transfer's registration from one source media dir to another.
@@ -70,8 +71,8 @@ impl PendingTransferRegistry {
         if let Some(old) = old_dir {
             if let Some(entry) = self.entries.get_mut(old) {
                 entry.transfers.remove(&transfer_id);
-                entry.version += 1;
             }
+            self.notify_subscribers(old);
             if self.entries.get(old).map(|e| e.transfers.is_empty()).unwrap_or(false) {
                 self.entries.remove(old);
             }
@@ -85,16 +86,32 @@ impl PendingTransferRegistry {
         if let Some(dir) = source_media_dir {
             if let Some(entry) = self.entries.get_mut(dir) {
                 entry.transfers.remove(&transfer_id);
-                entry.version += 1;
             }
+            self.notify_subscribers(dir);
             if self.entries.get(dir).map(|e| e.transfers.is_empty()).unwrap_or(false) {
                 self.entries.remove(dir);
             }
         }
     }
 
-    pub fn get_version(&self, source_media_dir: &Path) -> u64 {
-        self.entries.get(source_media_dir).map(|e| e.version).unwrap_or(0)
+    /// Subscribe to registry change notifications for a source media dir.
+    /// The returned receiver fires whenever another transfer registers, updates,
+    /// or unregisters for the same dir.
+    pub fn subscribe(&mut self, source_media_dir: &Path) -> crossbeam_channel::Receiver<()> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let entry = self.entries.entry(source_media_dir.to_owned()).or_insert_with(|| SourceMediaPending {
+            transfers: HashMap::new(),
+            subscribers: Vec::new(),
+            approval_lock: Arc::new(Mutex::new(())),
+        });
+        entry.subscribers.push(tx);
+        rx
+    }
+
+    fn notify_subscribers(&mut self, source_media_dir: &Path) {
+        if let Some(entry) = self.entries.get_mut(source_media_dir) {
+            entry.subscribers.retain(|tx| tx.send(()).is_ok());
+        }
     }
 
     pub fn get_approval_lock(&self, source_media_dir: &Path) -> Option<Arc<Mutex<()>>> {
