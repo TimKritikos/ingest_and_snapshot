@@ -56,3 +56,24 @@ fn test_filesystem_max_card_number_ignores_non_card_entries() {
     std::fs::create_dir(dir.path().join("CARD")).unwrap();
     assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(2));
 }
+
+#[test]
+fn test_registry_new_transfer_ids_are_unique() {
+    const N: usize = 10000;
+    let mut registry = PendingTransferRegistry::new();
+    let ids: Vec<TransferId> = (0..N).map(|_| registry.new_transfer_internal_id()).collect();
+    let unique_ids: std::collections::HashSet<TransferId> = ids.iter().copied().collect();
+    assert_eq!(unique_ids.len(), N);
+}
+
+#[test]
+fn test_registry_new_version_is_zero_for_unregistered_dir() {
+    let registry = PendingTransferRegistry::new();
+    assert_eq!(registry.get_version(Path::new("/some/dir")), 0);
+}
+
+#[test]
+fn test_registry_new_approval_lock_is_none_for_unregistered_dir() {
+    let registry = PendingTransferRegistry::new();
+    assert!(registry.get_approval_lock(Path::new("/some/dir")).is_none());
+}

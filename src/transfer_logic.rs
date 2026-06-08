@@ -35,7 +35,7 @@ fn run_transfer(
     detected: DetectedTransferInfo,
 ) {
     // Assign a unique ID for this transfer in the registry
-    let transfer_id: TransferId = registry.lock().unwrap().new_transfer_id();
+    let transfer_id: TransferId = registry.lock().unwrap().new_transfer_internal_id();
 
     // Determine initial source media and card ID
     let initial_source_media_dir = detected.source_media.as_ref()

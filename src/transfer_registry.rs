@@ -35,7 +35,7 @@ impl PendingTransferRegistry {
         }
     }
 
-    pub fn new_transfer_id(&mut self) -> TransferId {
+    pub fn new_transfer_internal_id(&mut self) -> TransferId {
         let id = self.next_transfer_id;
         self.next_transfer_id += 1;
         id
