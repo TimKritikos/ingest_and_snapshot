@@ -130,7 +130,7 @@ impl PendingTransferRegistry {
             })
             .unwrap_or(0);
 
-        Ok(format_card_id(fs_max.max(registry_max) + 1))
+        format_card_id(fs_max.max(registry_max) + 1)
     }
 
     /// Returns true if a directory named `card_id` already exists inside
@@ -146,8 +146,12 @@ impl PendingTransferRegistry {
 
 }
 
-pub fn format_card_id(number: u32) -> String {
-    format!("{}{:0>width$}", CARD_PREFIX, number, width = CARD_NUMBER_WIDTH)
+pub fn format_card_id(number: u32) -> Result<String, String> {
+    if number <= 9999 {
+        Ok(format!("{}{:0>width$}", CARD_PREFIX, number, width = CARD_NUMBER_WIDTH))
+    } else {
+        Err(format!("Numerical card id is outside of the allowable range ( {} is bigger than 9999)", number))
+    }
 }
 
 /// Parse a CARD#### number from an ID string. Returns None if the string doesn't
@@ -173,3 +177,7 @@ fn filesystem_max_card_number(data_dir: &Path) -> Result<u32, String> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transfer_registry_tests.rs"]
+mod tests;
