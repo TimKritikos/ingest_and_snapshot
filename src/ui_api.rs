@@ -33,10 +33,15 @@ pub enum TransferEvent {
     TransferSamples(Vec<TransferSample>),
 }
 
+pub enum SourceMediaSelection {
+    Auto,
+    Overridden(String),
+}
+
 pub enum ApproveTransferResponse {
     Approved,
     Denied,
-    DeviceOverwrite(Option<String>),
+    DeviceOverwrite(SourceMediaSelection),
     CardIdChanged(String),
 }
 
@@ -72,6 +77,10 @@ pub struct ApproveTransferQuery {
     pub data: ApproveTransferQueryUpdate,
     pub response_tx: Sender<ApproveTransferResponse>,
     pub update_rx: Receiver<ApproveTransferQueryUpdate>,
+    /// Whether an auto-detected source media exists for this transfer.
+    /// When false, the UI should not offer an "Auto-detected" option in the device picker,
+    /// since returning to Auto would mean returning to no source media.
+    pub has_auto_detected_source_media: bool,
 }
 
 pub struct ScanNewDeviceQuery {

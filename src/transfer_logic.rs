@@ -97,6 +97,7 @@ fn run_transfer(
                       ),
                 response_tx,
                 update_rx,
+                has_auto_detected_source_media: detected.source_media.is_some(),
             }),
             show_priority,
         ).is_err() {
@@ -112,21 +113,36 @@ fn run_transfer(
                     match msg {
                         Ok(ui_api::ApproveTransferResponse::Approved) => break true,
                         Ok(ui_api::ApproveTransferResponse::Denied) => break false,
-                        Ok(ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt)) => {
-                            handle_device_overwrite(
-                                &ui,
-                                &registry,
-                                transfer_id,
-                                &mut current_source_media_dir,
-                                &mut current_card_id,
-                                &mut card_id_manually_set,
-                                directory_opt,
-                                &all_source_media,
-                                &transfer_event_tx,
-                                &update_tx,
-                                detected.source_device.as_deref().unwrap_or(""),
-                                &mut notify_rx,
-                            );
+                        Ok(ui_api::ApproveTransferResponse::DeviceOverwrite(selection)) => {
+                            let (new_dir, device_overridden) = match selection {
+                                ui_api::SourceMediaSelection::Auto => (
+                                    detected.source_media.as_ref().map(|e| e.directory.clone()),
+                                    false,
+                                ),
+                                ui_api::SourceMediaSelection::Overridden(dir_str) => (
+                                    all_source_media.iter()
+                                        .find(|e| e.directory.to_string_lossy() == dir_str)
+                                        .map(|e| e.directory.clone()),
+                                    true,
+                                ),
+                            };
+                            if let Some(new_dir) = new_dir {
+                                handle_device_overwrite(
+                                    &ui,
+                                    &registry,
+                                    transfer_id,
+                                    &mut current_source_media_dir,
+                                    &mut current_card_id,
+                                    &mut card_id_manually_set,
+                                    new_dir,
+                                    device_overridden,
+                                    &all_source_media,
+                                    &transfer_event_tx,
+                                    &update_tx,
+                                    detected.source_device.as_deref().unwrap_or(""),
+                                    &mut notify_rx,
+                                );
+                            }
                         }
                         Ok(ui_api::ApproveTransferResponse::CardIdChanged(new_id)) => {
                             handle_card_id_changed(
@@ -374,44 +390,33 @@ fn handle_device_overwrite(
     current_source_media_dir: &mut Option<PathBuf>,
     current_card_id: &mut String,
     card_id_manually_set: &mut bool,
-    directory_opt: Option<String>,
+    new_dir: PathBuf,
+    device_overridden: bool,
     all_source_media: &[SourceMediaEntry],
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
     update_tx: &crossbeam_channel::Sender<ui_api::ApproveTransferQueryUpdate>,
     source_device: &str,
     notify_rx: &mut crossbeam_channel::Receiver<()>,
 ) {
-    let new_dir: Option<PathBuf> = directory_opt.as_deref()
-        .and_then(|dir_str| all_source_media.iter().find(|e| e.directory.to_string_lossy() == dir_str))
-        .map(|e| e.directory.clone());
-
     // Determine the card ID to carry into the new source media entry.
     // Manually set IDs are kept as-is; auto IDs are regenerated for the new dir.
-    let new_card_id = match new_dir.as_deref() {
-        Some(dir) => {
-            match source_media_scheme(dir, all_source_media) {
-                CardNamingScheme::Card if !*card_id_manually_set => {
-                    match registry.lock().unwrap().next_card_id(dir, transfer_id) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            show_card_id_error(ui, None, format!("Failed to compute card ID for new device: {}", e));
-                            String::new()
-                        }
-                    }
+    let new_card_id = match source_media_scheme(&new_dir, all_source_media) {
+        CardNamingScheme::Card if !*card_id_manually_set => {
+            match registry.lock().unwrap().next_card_id(&new_dir, transfer_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    show_card_id_error(ui, None, format!("Failed to compute card ID for new device: {}", e));
+                    String::new()
                 }
-                _ => current_card_id.clone(), // keep existing
             }
         }
-        None => String::new(),
+        _ => current_card_id.clone(), // keep existing
     };
-
-    // Move the id in the registry from one source media to the other
 
     let new_pending_card_id_data = if *card_id_manually_set {
         PendingCardId::Manual {
             id: new_card_id.clone(),
-            scheme_number: new_dir.as_deref()
-                .and_then(|_| crate::transfer_registry::parse_card_number(&new_card_id)),
+            scheme_number: crate::transfer_registry::parse_card_number(&new_card_id),
         }
     } else {
         PendingCardId::Auto(new_card_id.clone())
@@ -420,30 +425,30 @@ fn handle_device_overwrite(
     // Move registry entry and re-subscribe to the new dir atomically
     let new_notify_rx = {
         let mut reg = registry.lock().unwrap();
-        reg.move_source_media(transfer_id, current_source_media_dir.as_deref(), new_dir.as_deref(), new_pending_card_id_data);
-        match new_dir.as_deref() {
-            Some(dir) => reg.subscribe(dir),
-            None => crossbeam_channel::never(),
+        match current_source_media_dir.as_deref() {
+            Some(old) => reg.move_source_media(transfer_id, old, &new_dir, new_pending_card_id_data),
+            None      => reg.register(transfer_id, &new_dir, new_pending_card_id_data),
         }
+        reg.subscribe(&new_dir)
     };
     *notify_rx = new_notify_rx;
 
     // Update the caller's data
-    *current_source_media_dir = new_dir.clone();
+    *current_source_media_dir = Some(new_dir.clone());
     *current_card_id = new_card_id.clone();
 
     // Update the transfer in the UI
     let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
-        new_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        Some(new_dir.to_string_lossy().into_owned()),
     ));
 
     // Update the user query in the UI
     let _ = update_tx.send(query_update_from_state(
-        &new_dir,
+        &Some(new_dir),
         all_source_media,
         source_device,
         &new_card_id,
-        true,
+        device_overridden,
     ));
 }
 

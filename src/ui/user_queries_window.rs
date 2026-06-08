@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse};
 use crate::SourceMediaEntry;
 
 pub struct QueryWindowState {
@@ -41,18 +41,20 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     TextEntryOutcome::Editing   => {}
                 }
             } else if state.device_picker_open {
-                let device_count = available_devices.map(|d| d.len() + 1).unwrap_or(1);
+                let has_auto_detected = query.has_auto_detected_source_media;
+                let device_offset = if has_auto_detected { 1 } else { 0 };
+                let device_count = available_devices.map(|d| d.len() + device_offset).unwrap_or(device_offset.max(1));
                 match key.code {
                     KeyCode::Up   => { state.device_picker_selection = state.device_picker_selection.saturating_sub(1); }
                     KeyCode::Down => { state.device_picker_selection = (state.device_picker_selection + 1).min(device_count.saturating_sub(1)); }
                     KeyCode::Enter => {
-                        if state.device_picker_selection == 0 {
-                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(None));
+                        if has_auto_detected && state.device_picker_selection == 0 {
+                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(SourceMediaSelection::Auto));
                             state.device_override = None;
                         } else {
-                            let picked = available_devices.and_then(|d| d.get(state.device_picker_selection - 1)).cloned();
-                            let directory = picked.as_ref().map(|e| e.directory.to_string_lossy().into_owned());
-                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(directory));
+                            let picked = available_devices.and_then(|d| d.get(state.device_picker_selection - device_offset)).cloned();
+                            let directory = picked.as_ref().map(|e| e.directory.to_string_lossy().into_owned()).unwrap_or_default();
+                            let _ = query.response_tx.send(ApproveTransferResponse::DeviceOverwrite(SourceMediaSelection::Overridden(directory)));
                             state.device_override = picked;
                         }
                         state.device_picker_open = false;
@@ -182,7 +184,7 @@ pub fn render(
                     cursor_pos: entry.cursor,
                 }.render(frame.area(), frame.buffer_mut());
             } else if state.device_picker_open {
-                render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection);
+                render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection, query.has_auto_detected_source_media);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
@@ -266,7 +268,7 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     );
 }
 
-fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMediaEntry]>, device_override: Option<&SourceMediaEntry>, selection: usize) {
+fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMediaEntry]>, device_override: Option<&SourceMediaEntry>, selection: usize, has_auto_detected: bool) {
     let hint = {
         let hint = Style::default().fg(Color::Black);
         let ok   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
@@ -279,9 +281,11 @@ fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMed
         ])
     };
 
-    let mut items = vec![
-        tui_dialog_widgets::DialogFloatingListItem { label: "Auto-detected".to_string(), is_current: device_override.is_none() },
-    ];
+    let mut items: Vec<tui_dialog_widgets::DialogFloatingListItem> = if has_auto_detected {
+        vec![tui_dialog_widgets::DialogFloatingListItem { label: "Auto-detected".to_string(), is_current: device_override.is_none() }]
+    } else {
+        vec![]
+    };
     match available_devices {
         None => items.push(tui_dialog_widgets::DialogFloatingListItem {
             label: "Loading available devices...".to_string(),

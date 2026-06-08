@@ -60,26 +60,22 @@ impl PendingTransferRegistry {
     }
 
     /// Move a transfer's registration from one source media dir to another.
-    /// Pass `None` for old/new if the transfer had no source media dir on that side.
+    /// Both dirs must be known. Use `register`/`unregister` when only one side exists.
     pub fn move_source_media(
         &mut self,
         transfer_id: TransferId,
-        old_dir: Option<&Path>,
-        new_dir: Option<&Path>,
+        old_dir: &Path,
+        new_dir: &Path,
         new_card_id: PendingCardId,
     ) {
-        if let Some(old) = old_dir {
-            if let Some(entry) = self.entries.get_mut(old) {
-                entry.transfers.remove(&transfer_id);
-            }
-            self.notify_subscribers(old);
-            if self.entries.get(old).map(|e| e.transfers.is_empty()).unwrap_or(false) {
-                self.entries.remove(old);
-            }
+        if let Some(entry) = self.entries.get_mut(old_dir) {
+            entry.transfers.remove(&transfer_id);
         }
-        if let Some(new) = new_dir {
-            self.register(transfer_id, new, new_card_id);
+        self.notify_subscribers(old_dir);
+        if self.entries.get(old_dir).map(|e| e.transfers.is_empty()).unwrap_or(false) {
+            self.entries.remove(old_dir);
         }
+        self.register(transfer_id, new_dir, new_card_id);
     }
 
     pub fn unregister(&mut self, transfer_id: TransferId, source_media_dir: Option<&Path>) {

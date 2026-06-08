@@ -224,33 +224,32 @@ pub fn run() -> ! {
                     },
                     response_tx,
                     update_rx,
+                    has_auto_detected_source_media: true,
                 }), false).unwrap();
 
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
-                        ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
-                            let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(directory_opt.clone()));
-                            let update = match directory_opt {
-                                Some(directory) => {
-                                    ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir:  Some(directory),
-                                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                        transfer_function: "rsync_archive".to_string(),
-                                        data_size:         12 * 1024 * 1024 * 1024,
-                                        card_id:           "UNKNOWN".to_string(),
-                                        device_overridden: true,
-                                    }
-                                }
-                                None => {
-                                    ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir:  Some("/media/source_media/nikon_z9".to_string()),
-                                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                        transfer_function: "rsync_archive".to_string(),
-                                        data_size:         12 * 1024 * 1024 * 1024,
-                                        card_id:           "NIKON_001".to_string(),
-                                        device_overridden: false,
-                                    }
-                                }
+                        ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
+                            let (new_source_media_dir, new_card_id, device_overridden) = match selection {
+                                ui_api::SourceMediaSelection::Auto => (
+                                    Some("/media/source_media/nikon_z9".to_string()),
+                                    "NIKON_001".to_string(),
+                                    false,
+                                ),
+                                ui_api::SourceMediaSelection::Overridden(directory) => (
+                                    Some(directory),
+                                    "UNKNOWN".to_string(),
+                                    true,
+                                ),
+                            };
+                            let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
+                            let update = ui_api::ApproveTransferQueryUpdate {
+                                source_media_dir:  new_source_media_dir,
+                                source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
+                                transfer_function: "rsync_archive".to_string(),
+                                data_size:         12 * 1024 * 1024 * 1024,
+                                card_id:           new_card_id,
+                                device_overridden,
                             };
                             let _ = update_tx.send(update);
                         }
@@ -322,20 +321,25 @@ pub fn run() -> ! {
                         },
                         response_tx,
                         update_rx,
+                        has_auto_detected_source_media: false,
                     }), false).unwrap();
 
                     thread::spawn(move || {
                         while let Ok(response) = response_rx.recv() {
                             match response {
-                                ui_api::ApproveTransferResponse::DeviceOverwrite(directory_opt) => {
-                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(directory_opt.clone()));
+                                ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
+                                    let (new_source_media_dir, device_overridden) = match selection {
+                                        ui_api::SourceMediaSelection::Auto                    => (None, false),
+                                        ui_api::SourceMediaSelection::Overridden(directory)  => (Some(directory), true),
+                                    };
+                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
                                     let update = ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir:  directory_opt,
+                                        source_media_dir:  new_source_media_dir,
                                         source_device:     String::new(),
                                         transfer_function: String::new(),
                                         data_size:         0,
                                         card_id:           String::new(),
-                                        device_overridden: true,
+                                        device_overridden,
                                     };
                                     let _ = update_tx.send(update);
                                 }
