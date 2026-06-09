@@ -335,6 +335,18 @@ fn test_unregister_does_not_notify_other_dirs() {
 }
 
 #[test]
+fn test_unregister_unknown_transfer_id_returns_error_and_does_not_notify() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let id_registered = registry.new_transfer_internal_id();
+    let id_unknown    = registry.new_transfer_internal_id();
+    registry.register(id_registered, dir, PendingCardId::Auto("CARD0001".to_string()));
+    let rx = registry.subscribe(dir);
+    assert!(registry.unregister(id_unknown, dir).is_err());
+    assert!(rx.try_recv().is_err()); // dir was not notified
+}
+
+#[test]
 fn test_unregister_on_unregistered_dir_returns_error_and_does_not_notify() {
     let mut registry = PendingTransferRegistry::new();
     let dir_registered = Path::new("/media/card_a");
