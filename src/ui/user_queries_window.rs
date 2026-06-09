@@ -68,7 +68,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 }
             } else {
                 match key.code {
-                    KeyCode::Char('o') | KeyCode::Char('O') => {
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
                         state.device_picker_open = true;
                         state.device_picker_selection = 0;
                     }
@@ -235,41 +235,15 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
         area
     };
 
-    let info_height = content_area.height.saturating_sub(4).max(1);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
-            Constraint::Length(info_height), // All info
-            Constraint::Length(1),           // gap
-            Constraint::Length(1),           // device overwrite query
-            Constraint::Length(1),           // gap
+            Constraint::Min(0),              // All info
             Constraint::Length(1),           // buttons
         ])
         .split(content_area);
 
     render_transfer_info(frame, rows[0], query, available_devices);
-
-    let label_style    = Style::default().fg(Color::Black);
-    let key_style      = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
-    let selected_style = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
-    let none_style     = Style::default().fg(Color::DarkGray);
-
-    let (override_text, override_style) = match device_override {
-        Some(entry) => {
-            let name = entry.device_model_name_pretty.as_deref()
-                .unwrap_or(&entry.device_model_name);
-            (name.to_owned(), selected_style)
-        },
-        None => ("none selected".to_owned(), none_style),
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("[O]", key_style),
-            Span::styled(" Override device:  ", label_style),
-            Span::styled(override_text, override_style),
-        ])),
-        rows[2],
-    );
 
     let hint     = Style::default().fg(Color::Black);
     let ok       = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
@@ -287,10 +261,8 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
             Span::styled(" Approve   ", approve_label_style),
             Span::styled("[Esc]", deny),
             Span::styled(" Deny   ", hint),
-            Span::styled("[C]", act),
-            Span::styled(" Set card ID", hint),
         ])),
-        rows[4],
+        rows[1],
     );
 }
 
@@ -378,57 +350,36 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let value       = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
     let overwritten = Style::default().fg(Color::DarkGray);
     let none_style  = Style::default().fg(Color::DarkGray);
+    let hint_style   = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
     let data = &query.data;
     let size_str = super::format_bytes(data.data_size);
 
-    let entry = data.source_media_dir.as_deref()
+    let source_media = data.source_media_dir.as_deref()
         .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir));
 
-    let (device_name, make_name, serial_str) = match entry {
+    let (device_name_str, device_values_style) = match source_media {
         Some(e) => {
             let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
             (
-                format!("{} {}", e.device_make_name, model),
-                e.device_make_name.as_str().to_owned(),
-                e.serial_number.clone(),
+                format!("{} {} (SN: {})", e.device_make_name, model,e.serial_number),
+                value,
             )
         }
-        None => (String::new(), String::new(), String::new()),
+        None => (  "none".to_owned(), none_style),
     };
-
-    let (device_value_str, device_style) = if device_name.is_empty() {
-        ("none".to_owned(), none_style)
-    } else {
-        (device_name, value)
-    };
-
-    let mut product_spans = vec![Span::styled("Device:   ", label), Span::styled(device_value_str, device_style)];
-    if data.device_overridden {
-        product_spans.push(Span::styled(" (overridden)", overwritten));
-    }
 
     let mut lines: Vec<Line> = vec![
-        Line::from(product_spans),
-        Line::from(vec![Span::styled("Make:     ", label), Span::styled(make_name, value)]),
-        Line::from(vec![Span::styled("Serial:   ", label), Span::styled(serial_str, value)]),
-        Line::from(vec![Span::styled("Function: ", label), Span::styled(data.transfer_function.as_str(), value)]),
-        Line::from(vec![
-            Span::styled("Size:     ", label),
-            Span::styled(size_str, value),
-            Span::styled("   Card ID: ", label),
-            Span::styled(data.card_id.as_str(), value),
-        ]),
+        Line::from(vec![Span::styled("   Source media: ", label), Span::styled("[S] ", hint_style), Span::styled(device_name_str, device_values_style), Span::styled(
+            if data.device_overridden {
+                " (overridden)"
+            }else{
+                ""
+            }, overwritten)]),
+        Line::from(vec![Span::styled("        Card ID: ", label), Span::styled("[C] ", hint_style), Span::styled(data.card_id.as_str(), value)]),
+        Line::from(vec![Span::styled(" Storage device: ", label), Span::styled(data.source_device.as_str(), value)]),
+        Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled(size_str, value)]),
+        //Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled("    ", hint_style), Span::styled(size_str, value)]),
     ];
-
-    // Derive column widths from the already-built spans so the strings only appear once
-    let line_w = |l: &Line| -> usize { l.spans.iter().map(|s| s.content.len()).sum() };
-    let max_w  = lines.iter().map(line_w).max().unwrap_or(0);
-    let col0_w = line_w(&lines[0]);
-
-    const COL_GAP: usize = 3;
-    lines[0].spans.push(Span::raw(" ".repeat(max_w - col0_w + COL_GAP)));
-    lines[0].spans.push(Span::styled("Source device:  ", label));
-    lines[0].spans.push(Span::styled(data.source_device.as_str(), value));
 
     frame.render_widget(Paragraph::new(lines), area);
 }

@@ -227,15 +227,15 @@ pub const BRAILLE_BAR_RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
 
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1}GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {
-        format!("{:.1}MiB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     } else if bytes >= 1024 {
-        format!("{:.1}KiB", bytes as f64 / 1024.0)
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
     } else if bytes != 1 {
-        format!("{}Bytes", bytes)
+        format!("{} Bytes", bytes)
     } else {
-        format!("{}Byte", bytes)
+        format!("{} Byte", bytes)
     }
 }
 
