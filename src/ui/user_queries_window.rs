@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningQuery, NoSourceMediaWarningResponse};
 use crate::SourceMediaEntry;
 
 pub struct QueryWindowState {
@@ -26,6 +26,10 @@ impl QueryWindowState {
             card_id_entry: None,
         }
     }
+}
+
+fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
+    data.source_media_dir.is_some() && !data.card_id.is_empty()
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
@@ -71,7 +75,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state.card_id_entry = Some(TextEntryState::new(query.data.card_id.clone()));
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter if can_approve(&query.data) => {
                         if let Some(UserQuery::ApproveTransfer(query)) = query_queue.pop_front() {
                             let _ = query.response_tx.send(ApproveTransferResponse::Approved);
                         }
@@ -142,6 +146,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::NoSourceMediaWarning(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
+                    if let Some(UserQuery::NoSourceMediaWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NoSourceMediaWarningResponse::BackToQuery);
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(UserQuery::NoSourceMediaWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NoSourceMediaWarningResponse::Cancel);
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -191,6 +210,7 @@ pub fn render(
         UserQuery::FatalError(query) => render_fatal_error(frame, padded, query),
         UserQuery::SourceMediaWarnings(query) => render_source_media_warnings(frame, padded, query),
         UserQuery::ConfirmCardId(query) => render_confirm_card_id(frame, padded, query),
+        UserQuery::NoSourceMediaWarning(_) => render_no_source_media_warning(frame, padded),
     }
 }
 
@@ -251,14 +271,20 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
         rows[2],
     );
 
-    let hint = Style::default().fg(Color::Black);
-    let ok   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
-    let deny = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let act  = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let hint     = Style::default().fg(Color::Black);
+    let ok       = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let ok_dim   = Style::default().fg(Color::DarkGray);
+    let deny     = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let act      = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let (approve_key_style, approve_label_style) = if can_approve(&query.data) {
+        (ok, hint)
+    } else {
+        (ok_dim, ok_dim)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("[Enter]", ok),
-            Span::styled(" Approve   ", hint),
+            Span::styled("[Enter]", approve_key_style),
+            Span::styled(" Approve   ", approve_label_style),
             Span::styled("[Esc]", deny),
             Span::styled(" Deny   ", hint),
             Span::styled("[C]", act),
@@ -731,6 +757,34 @@ fn render_confirm_card_id(frame: &mut Frame, area: Rect, query: &ConfirmCardIdQu
 
     lines.push(Line::from(button_spans));
 
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
+}
+
+fn render_no_source_media_warning(frame: &mut Frame, area: Rect) {
+    let warning = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let label   = Style::default().fg(Color::Black);
+    let hint    = Style::default().fg(Color::Black);
+    let back    = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let cancel  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(vec![Span::styled("Warning: no source media selected", warning)]),
+        Line::from(""),
+        Line::from(vec![Span::styled("A source media device must be selected before a transfer can proceed.", label)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter]", back),
+            Span::styled(" Back to query   ", hint),
+            Span::styled("[Esc]", cancel),
+            Span::styled(" Cancel transfer", hint),
+        ]),
+    ];
     let content_height = lines.len() as u16;
     let y_offset = area.height.saturating_sub(content_height) / 2;
     let centered = Rect {

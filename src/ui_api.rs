@@ -105,6 +105,15 @@ pub struct SourceMediaWarningsQuery {
     pub response_tx: Sender<()>,
 }
 
+pub enum NoSourceMediaWarningResponse {
+    BackToQuery,
+    Cancel,
+}
+
+pub struct NoSourceMediaWarningQuery {
+    pub response_tx: Sender<NoSourceMediaWarningResponse>,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     ScanNewDevice(ScanNewDeviceQuery),
@@ -112,6 +121,7 @@ pub enum UserQuery {
                                  //will be sent before any other message anyways so it doesn't matter
     SourceMediaWarnings(SourceMediaWarningsQuery),
     ConfirmCardId(ConfirmCardIdQuery),
+    NoSourceMediaWarning(NoSourceMediaWarningQuery),
 }
 
 /// Messages the UI sends back to the main logic.

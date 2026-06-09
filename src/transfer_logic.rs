@@ -220,8 +220,26 @@ fn run_transfer(
         let source_dir = match &current_source_media_dir {
             Some(dir) => dir.clone(),
             None => {
-                // No source media dir — nothing to check, proceed directly
-                break 'approval_loop;
+                // No source media dir selected — warn the user and let them go back or cancel
+                let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::NoSourceMediaWarningResponse>();
+                if ui.lock().unwrap().user_query(
+                    ui_api::UserQuery::NoSourceMediaWarning(ui_api::NoSourceMediaWarningQuery {
+                        response_tx: warn_tx,
+                    }),
+                    true,
+                ).is_err() {
+                    return;
+                }
+                match warn_rx.recv() {
+                    Ok(ui_api::NoSourceMediaWarningResponse::BackToQuery) | Err(_) => {
+                        is_re_approval = true;
+                        continue 'approval_loop;
+                    }
+                    Ok(ui_api::NoSourceMediaWarningResponse::Cancel) => {
+                        let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                        return;
+                    }
+                }
             }
         };
 
