@@ -66,7 +66,10 @@ fn run_transfer(
         current_source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
         transfer_event_rx,
     ).is_err() {
-        registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+        if let Some(dir) = current_source_media_dir.as_deref() {
+            registry.lock().unwrap().unregister(transfer_id, dir)
+                .expect("unregister: transfer must be registered before unregistering");
+        }
         return;
     }
 
@@ -101,7 +104,10 @@ fn run_transfer(
             }),
             show_priority,
         ).is_err() {
-            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+            if let Some(dir) = current_source_media_dir.as_deref() {
+                registry.lock().unwrap().unregister(transfer_id, dir)
+                    .expect("unregister: transfer must be registered before unregistering");
+            }
             return;
         }
 
@@ -159,7 +165,10 @@ fn run_transfer(
                             );
                         }
                         Err(_) => {
-                            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+                            if let Some(dir) = current_source_media_dir.as_deref() {
+                                registry.lock().unwrap().unregister(transfer_id, dir)
+                                    .expect("unregister: transfer must be registered before unregistering");
+                            }
                             return;
                         }
                     }
@@ -199,8 +208,11 @@ fn run_transfer(
         };
 
         if !approved {
-            let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
-            registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+            let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged); //TODO: That is probably misuse of the api
+            if let Some(dir) = current_source_media_dir.as_deref() {
+                registry.lock().unwrap().unregister(transfer_id, dir)
+                    .expect("unregister: transfer must be registered before unregistering");
+            }
             return;
         }
 
@@ -224,7 +236,8 @@ fn run_transfer(
             Ok(v) => v,
             Err(e) => {
                 show_card_id_error(&ui, Some(&transfer_event_tx), format!("Error checking card ID: {}", e));
-                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                 return;
             }
         };
@@ -235,7 +248,8 @@ fn run_transfer(
                 Ok(next_sequential) => next_sequential != current_card_id,
                 Err(e) => {
                     show_card_id_error(&ui, Some(&transfer_event_tx), format!("Error computing next card ID: {}", e));
-                    registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                    registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                     return;
                 }
             }
@@ -277,7 +291,8 @@ fn run_transfer(
                 }),
                 true,
             ).is_err() {
-                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                 return;
             }
 
@@ -295,7 +310,8 @@ fn run_transfer(
                     drop(_lock_guard);
                     if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
                         show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
-                        registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                        registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                         return;
                     }
                     break 'approval_loop;
@@ -305,7 +321,8 @@ fn run_transfer(
                     drop(_lock_guard);
                     if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
                         show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
-                        registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                        registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                         return;
                     }
                     break 'approval_loop;
@@ -322,7 +339,8 @@ fn run_transfer(
             drop(_lock_guard);
             if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
                 show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
-                registry.lock().unwrap().unregister(transfer_id, Some(&source_dir));
+                registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
                 return;
             }
             break 'approval_loop;
@@ -330,7 +348,10 @@ fn run_transfer(
     }
 
     // Unregister from registry — card directory now exists on filesystem
-    registry.lock().unwrap().unregister(transfer_id, current_source_media_dir.as_deref());
+    if let Some(dir) = current_source_media_dir.as_deref() {
+        registry.lock().unwrap().unregister(transfer_id, dir)
+            .expect("unregister: transfer must be registered before unregistering");
+    }
 
     // Step 4: Move the data
     // TODO

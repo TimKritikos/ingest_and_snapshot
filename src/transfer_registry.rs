@@ -82,15 +82,17 @@ impl PendingTransferRegistry {
         self.register(transfer_id, new_dir, new_card_id);
     }
 
-    pub fn unregister(&mut self, transfer_id: TransferId, source_media_dir: Option<&Path>) {
-        if let Some(dir) = source_media_dir {
-            if let Some(entry) = self.entries.get_mut(dir) {
+    pub fn unregister(&mut self, transfer_id: TransferId, source_media_dir: &Path) -> Result<(), String> {
+        match self.entries.get_mut(source_media_dir) {
+            Some(entry) => {
                 entry.transfers.remove(&transfer_id);
+                self.notify_subscribers(source_media_dir);
+                if self.entries.get(source_media_dir).map(|e| e.transfers.is_empty()).unwrap_or(false) {
+                    self.entries.remove(source_media_dir);
+                }
+                Ok(())
             }
-            self.notify_subscribers(dir);
-            if self.entries.get(dir).map(|e| e.transfers.is_empty()).unwrap_or(false) {
-                self.entries.remove(dir);
-            }
+            None => Err(format!("unregister called for unregistered source media dir {:?}", source_media_dir)),
         }
     }
 

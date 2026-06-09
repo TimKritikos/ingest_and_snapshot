@@ -287,3 +287,61 @@ fn test_move_source_media_does_not_notify_unrelated_dir_subscribers() {
     registry.move_source_media(id, old_dir, new_dir, PendingCardId::Auto("CARD0002".to_string()));
     assert!(rx_unrelated.try_recv().is_err());
 }
+
+#[test]
+fn test_unregister_notifies_subscribers() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir, PendingCardId::Auto("CARD0001".to_string()));
+    let rx = registry.subscribe(dir);
+    registry.unregister(id, dir).unwrap();
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_err()); // no extra notifications
+}
+
+#[test]
+fn test_unregister_removes_entry_when_last_transfer() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir, PendingCardId::Auto("CARD0001".to_string()));
+    registry.unregister(id, dir).unwrap();
+    assert!(registry.get_approval_lock(dir).is_none());
+}
+
+#[test]
+fn test_unregister_keeps_entry_when_other_transfers_remain() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir = Path::new("/media/card");
+    let id1 = registry.new_transfer_internal_id();
+    let id2 = registry.new_transfer_internal_id();
+    registry.register(id1, dir, PendingCardId::Auto("CARD0001".to_string()));
+    registry.register(id2, dir, PendingCardId::Auto("CARD0002".to_string()));
+    registry.unregister(id1, dir).unwrap();
+    assert!(registry.get_approval_lock(dir).is_some());
+}
+
+#[test]
+fn test_unregister_does_not_notify_other_dirs() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir_a = Path::new("/media/card_a");
+    let dir_b = Path::new("/media/card_b");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir_a, PendingCardId::Auto("CARD0001".to_string()));
+    let rx_b = registry.subscribe(dir_b);
+    registry.unregister(id, dir_a).unwrap();
+    assert!(rx_b.try_recv().is_err());
+}
+
+#[test]
+fn test_unregister_on_unregistered_dir_returns_error_and_does_not_notify() {
+    let mut registry = PendingTransferRegistry::new();
+    let dir_registered = Path::new("/media/card_a");
+    let dir_unknown    = Path::new("/media/card_b");
+    let id = registry.new_transfer_internal_id();
+    registry.register(id, dir_registered, PendingCardId::Auto("CARD0001".to_string()));
+    let rx = registry.subscribe(dir_registered);
+    assert!(registry.unregister(id, dir_unknown).is_err());
+    assert!(rx.try_recv().is_err()); // registered dir was not notified
+}
