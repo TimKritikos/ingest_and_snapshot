@@ -7,13 +7,15 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningQuery, NoSourceMediaWarningResponse};
-use crate::SourceMediaEntry;
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse};
+use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
     pub device_picker_open: bool,
     pub device_picker_selection: usize,
     pub device_override: Option<SourceMediaEntry>,
+    pub storage_device_picker_open: bool,
+    pub storage_device_picker_selection: usize,
     pub card_id_entry: Option<TextEntryState>,
 }
 
@@ -23,13 +25,15 @@ impl QueryWindowState {
             device_picker_open: false,
             device_picker_selection: 0,
             device_override: None,
+            storage_device_picker_open: false,
+            storage_device_picker_selection: 0,
             card_id_entry: None,
         }
     }
 }
 
 fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
-    data.source_media_dir.is_some() && !data.card_id.is_empty()
+    data.source_media_dir.is_some() && !data.card_id.is_empty() && !data.source_device.is_empty()
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
@@ -66,11 +70,34 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     KeyCode::Esc => { state.device_picker_open = false; }
                     _ => {}
                 }
+            } else if state.storage_device_picker_open {
+                let devices = &query.available_storage_devices;
+                let has_auto = query.has_auto_detected_storage_device;
+                let device_offset = if has_auto { 1 } else { 0 };
+                let device_count = devices.len() + device_offset;
+                match key.code {
+                    KeyCode::Up   => { state.storage_device_picker_selection = state.storage_device_picker_selection.saturating_sub(1); }
+                    KeyCode::Down => { state.storage_device_picker_selection = (state.storage_device_picker_selection + 1).min(device_count.saturating_sub(1)); }
+                    KeyCode::Enter => {
+                        if has_auto && state.storage_device_picker_selection == 0 {
+                            let _ = query.response_tx.send(ApproveTransferResponse::StorageDeviceAuto);
+                        } else if let Some(device) = devices.get(state.storage_device_picker_selection - device_offset) {
+                            let _ = query.response_tx.send(ApproveTransferResponse::StorageDeviceChanged(device.id.clone()));
+                        }
+                        state.storage_device_picker_open = false;
+                    }
+                    KeyCode::Esc => { state.storage_device_picker_open = false; }
+                    _ => {}
+                }
             } else {
                 match key.code {
                     KeyCode::Char('s') | KeyCode::Char('S') => {
                         state.device_picker_open = true;
                         state.device_picker_selection = 0;
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                        state.storage_device_picker_open = true;
+                        state.storage_device_picker_selection = 0;
                     }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state.card_id_entry = Some(TextEntryState::new(query.data.card_id.clone()));
@@ -204,6 +231,8 @@ pub fn render(
                 }.render(frame.area(), frame.buffer_mut());
             } else if state.device_picker_open {
                 render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection, query.has_auto_detected_source_media);
+            } else if state.storage_device_picker_open {
+                render_storage_device_picker(frame, &query.available_storage_devices, &query.data.source_device, query.data.storage_device_overridden, query.has_auto_detected_storage_device, state.storage_device_picker_selection);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
@@ -312,6 +341,43 @@ fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMed
     );
 }
 
+fn render_storage_device_picker(frame: &mut Frame, devices: &[StorageDeviceEntry], current_display_name: &str, storage_device_overridden: bool, has_auto: bool, selection: usize) {
+    let hint = {
+        let hint = Style::default().fg(Color::Black);
+        let ok   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+        let esc  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        Line::from(vec![
+            Span::styled("[Enter]", ok),
+            Span::styled(" Select  ", hint),
+            Span::styled("[Esc]", esc),
+            Span::styled(" Cancel", hint),
+        ])
+    };
+
+    let mut items: Vec<tui_dialog_widgets::DialogFloatingListItem> = if has_auto {
+        vec![tui_dialog_widgets::DialogFloatingListItem {
+            label: "Auto-detected".to_string(),
+            is_current: !storage_device_overridden,
+        }]
+    } else {
+        vec![]
+    };
+    items.extend(devices.iter().map(|d| {
+        tui_dialog_widgets::DialogFloatingListItem {
+            label: d.display_name.clone(),
+            is_current: storage_device_overridden && d.display_name == current_display_name,
+        }
+    }));
+
+    frame.render_widget(
+        tui_dialog_widgets::DialogFloatingList::new("Select storage device")
+            .items(items)
+            .selected(selection)
+            .hint(hint),
+        frame.area(),
+    );
+}
+
 fn render_icon_placeholder(frame: &mut Frame, area: Rect) {
     let buf = frame.buffer_mut();
     let bg   = Style::default().bg(Color::DarkGray).fg(Color::Gray);
@@ -375,8 +441,18 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
             }else{
                 ""
             }, overwritten)]),
-        Line::from(vec![Span::styled("        Card ID: ", label), Span::styled("[C] ", hint_style), Span::styled(data.card_id.as_str(), value)]),
-        Line::from(vec![Span::styled(" Storage device: ", label), Span::styled(data.source_device.as_str(), value)]),
+        Line::from(vec![Span::styled("        Card ID: ", label), Span::styled("[C] ", hint_style), Span::styled(data.card_id.as_str(), value), Span::styled(
+            if data.card_id_overridden {
+                " (overridden)"
+            }else{
+                ""
+            }, overwritten)]),
+        Line::from(vec![Span::styled(" Storage device: ", label), Span::styled("[D] ", hint_style), Span::styled(data.source_device.as_str(), value), Span::styled(
+            if data.storage_device_overridden {
+                " (overridden)"
+            }else{
+                ""
+            }, overwritten)]),
         Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled(size_str, value)]),
         //Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled("    ", hint_style), Span::styled(size_str, value)]),
     ];

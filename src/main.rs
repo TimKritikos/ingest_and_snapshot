@@ -126,6 +126,12 @@ struct SourceMediaConfig {
 }
 
 #[derive(Clone)]
+pub struct StorageDeviceEntry {
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone)]
 struct SourceMediaEntry {
     device_make_name: String,
     device_model_name: String,
@@ -470,6 +476,14 @@ fn main() {
         }
     };
 
+    let storage_devices: Vec<StorageDeviceEntry> = devices_config.devices.iter()
+        .filter(|d| d.device_type.iter().any(|t| t == "storage"))
+        .map(|d| StorageDeviceEntry {
+            id:           d.id.clone(),
+            display_name: d.names.join(", "),
+        })
+        .collect();
+
     let (source_media_entries, source_media_warnings) = match scan_source_media(&media_dir) {
         Ok(result) => result,
         Err(msg) => {
@@ -565,6 +579,7 @@ fn main() {
                         Arc::clone(&ui),
                         Arc::clone(&registry),
                         source_media_entries.clone(),
+                        storage_devices.clone(),
                         transfer_logic::DetectedTransferInfo {
                             source_media:  None,
                             card_id:       None,

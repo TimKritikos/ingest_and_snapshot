@@ -18,10 +18,11 @@ pub fn spawn_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
+    all_storage_devices: Vec<crate::StorageDeviceEntry>,
     detected: DetectedTransferInfo,
 ) {
     thread::spawn(move || {
-        run_transfer(ui, registry, all_source_media, detected);
+        run_transfer(ui, registry, all_source_media, all_storage_devices, detected);
     });
 }
 
@@ -29,6 +30,7 @@ fn run_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
+    all_storage_devices: Vec<crate::StorageDeviceEntry>,
     detected: DetectedTransferInfo,
 ) {
     // Assign a unique ID for this transfer in the registry
@@ -38,7 +40,12 @@ fn run_transfer(
     let initial_source_media_dir = detected.source_media.as_ref()
         .map(|e| e.directory.clone());
 
+    let auto_detected_device_id: Option<String> = detected.source_device.clone();
+
     let mut current_source_media_dir: Option<PathBuf> = initial_source_media_dir.clone();
+    let mut current_source_device_id: Option<String> = auto_detected_device_id.clone();
+    let mut current_device_overridden: bool = false;
+    let mut current_storage_device_overridden: bool = false;
     let mut card_id_manually_set = false;
 
     // Compute the initial card ID and register with the registry
@@ -94,13 +101,17 @@ fn run_transfer(
                 data: query_update_from_state(
                           &current_source_media_dir,
                           &all_source_media,
-                          detected.source_device.as_deref().unwrap_or(""),
+                          &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                           &current_card_id,
-                          false,
+                          current_device_overridden,
+                          current_storage_device_overridden,
+                          card_id_manually_set,
                       ),
                 response_tx,
                 update_rx,
                 has_auto_detected_source_media: detected.source_media.is_some(),
+                has_auto_detected_storage_device: auto_detected_device_id.is_some(),
+                available_storage_devices: all_storage_devices.clone(),
             }),
             show_priority,
         ).is_err() {
@@ -140,12 +151,14 @@ fn run_transfer(
                                     &mut current_source_media_dir,
                                     &mut current_card_id,
                                     &mut card_id_manually_set,
+                                    &mut current_device_overridden,
                                     new_dir,
                                     device_overridden,
                                     &all_source_media,
                                     &transfer_event_tx,
                                     &update_tx,
-                                    detected.source_device.as_deref().unwrap_or(""),
+                                    &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                    current_storage_device_overridden,
                                     &mut notify_rx,
                                 );
                             }
@@ -161,8 +174,37 @@ fn run_transfer(
                                 &all_source_media,
                                 new_id,
                                 &update_tx,
-                                detected.source_device.as_deref().unwrap_or(""),
+                                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                current_device_overridden,
+                                current_storage_device_overridden,
                             );
+                        }
+                        Ok(ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id)) => {
+                            let display_name = storage_device_display_name(Some(&device_id), &all_storage_devices);
+                            current_source_device_id = Some(device_id);
+                            current_storage_device_overridden = true;
+                            let _ = update_tx.send(query_update_from_state(
+                                &current_source_media_dir,
+                                &all_source_media,
+                                &display_name,
+                                &current_card_id,
+                                current_device_overridden,
+                                current_storage_device_overridden,
+                                card_id_manually_set,
+                            ));
+                        }
+                        Ok(ui_api::ApproveTransferResponse::StorageDeviceAuto) => {
+                            current_source_device_id = auto_detected_device_id.clone();
+                            current_storage_device_overridden = false;
+                            let _ = update_tx.send(query_update_from_state(
+                                &current_source_media_dir,
+                                &all_source_media,
+                                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                &current_card_id,
+                                current_device_overridden,
+                                current_storage_device_overridden,
+                                card_id_manually_set,
+                            ));
                         }
                         Err(_) => {
                             if let Some(dir) = current_source_media_dir.as_deref() {
@@ -192,9 +234,11 @@ fn run_transfer(
                                     let _ = update_tx.send(query_update_from_state(
                                         &current_source_media_dir,
                                         &all_source_media,
-                                        detected.source_device.as_deref().unwrap_or(""),
+                                        &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                         &new_id,
-                                        false,
+                                        current_device_overridden,
+                                        current_storage_device_overridden,
+                                        card_id_manually_set,
                                     ));
                                 }
                                 Err(e) => {
@@ -429,12 +473,14 @@ fn handle_device_overwrite(
     current_source_media_dir: &mut Option<PathBuf>,
     current_card_id: &mut String,
     card_id_manually_set: &mut bool,
+    current_device_overridden: &mut bool,
     new_dir: PathBuf,
     device_overridden: bool,
     all_source_media: &[SourceMediaEntry],
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
     update_tx: &crossbeam_channel::Sender<ui_api::ApproveTransferQueryUpdate>,
     source_device: &str,
+    storage_device_overridden: bool,
     notify_rx: &mut crossbeam_channel::Receiver<()>,
 ) {
     // Determine the card ID to carry into the new source media entry.
@@ -475,6 +521,7 @@ fn handle_device_overwrite(
     // Update the caller's data
     *current_source_media_dir = Some(new_dir.clone());
     *current_card_id = new_card_id.clone();
+    *current_device_overridden = device_overridden;
 
     // Update the transfer in the UI
     let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
@@ -488,6 +535,8 @@ fn handle_device_overwrite(
         source_device,
         &new_card_id,
         device_overridden,
+        storage_device_overridden,
+        *card_id_manually_set,
     ));
 }
 
@@ -502,6 +551,8 @@ fn handle_card_id_changed(
     new_id: String,
     update_tx: &crossbeam_channel::Sender<ui_api::ApproveTransferQueryUpdate>,
     source_device: &str,
+    device_overridden: bool,
+    storage_device_overridden: bool,
 ) {
     let (final_id, pending, is_manual) = if new_id.is_empty() {
         // IF empty revert to auto if scheme supports it
@@ -549,7 +600,9 @@ fn handle_card_id_changed(
         all_source_media,
         source_device,
         &final_id,
-        false,
+        device_overridden,
+        storage_device_overridden,
+        is_manual,
     ));
 }
 
@@ -566,6 +619,8 @@ fn query_update_from_state(
     source_device: &str,
     card_id: &str,
     device_overridden: bool,
+    storage_device_overridden: bool,
+    card_id_overridden: bool,
 ) -> ui_api::ApproveTransferQueryUpdate {
     ui_api::ApproveTransferQueryUpdate {
         source_media_dir: source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -574,6 +629,8 @@ fn query_update_from_state(
         data_size: 0,
         card_id: card_id.to_owned(),
         device_overridden,
+        storage_device_overridden,
+        card_id_overridden,
     }
 }
 
@@ -596,6 +653,13 @@ fn show_card_id_error(
     if let Some(tx) = transfer_event_tx {
         let _ = tx.send(ui_api::TransferEvent::DeviceUnplugged);
     }
+}
+
+fn storage_device_display_name(device_id: Option<&str>, all_storage_devices: &[crate::StorageDeviceEntry]) -> String {
+    device_id
+        .and_then(|id| all_storage_devices.iter().find(|d| d.id == id))
+        .map(|d| d.display_name.clone())
+        .unwrap_or_default()
 }
 
 fn subscribe_or_never(

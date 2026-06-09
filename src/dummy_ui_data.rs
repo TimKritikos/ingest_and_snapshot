@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{thread, time, process};
 use crate::ui_api;
 use crate::ui::TuiBackend;
-use crate::{SourceMediaEntry, CardNamingScheme};
+use crate::{SourceMediaEntry, CardNamingScheme, StorageDeviceEntry};
 
 pub fn run() -> ! {
     let now_ms = || -> u64 {
@@ -58,6 +58,19 @@ pub fn run() -> ! {
                     directory:                PathBuf::from("/media/source_media/nikon_z9"),
                 },
     ];
+
+    let dummy_storage_devices = vec![
+        StorageDeviceEntry {
+            id:           "01940000-0000-7000-0000-000000000001".to_string(),
+            display_name: "Sony SF-G 64GB".to_string(),
+        },
+        StorageDeviceEntry {
+            id:           "01940000-0000-7000-0000-000000000002".to_string(),
+            display_name: "Lexar Professional 256GB, Lexar Professional 256GB Backup".to_string(),
+        },
+    ];
+
+    let dummy_storage_devices_for_manual = dummy_storage_devices.clone();
 
     let (cancel_tx_outer,   cancel_rx_outer)   = crossbeam_channel::unbounded::<()>();
     let (cancel_tx_approve, cancel_rx_approve) = crossbeam_channel::unbounded::<()>();
@@ -194,6 +207,7 @@ pub fn run() -> ! {
 
             // Dummy ApproveTransfer query after 5 seconds
             let ui_approve = Arc::clone(&ui);
+            let dummy_storage_devices_approve = dummy_storage_devices.clone();
             thread::spawn(move || {
                 let now_ms = || -> u64 {
                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
@@ -215,25 +229,37 @@ pub fn run() -> ! {
 
                 ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                     data: ui_api::ApproveTransferQueryUpdate {
-                        source_media_dir:  Some("/media/source_media/nikon_z9".to_string()),
-                        source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
-                        transfer_function: "rsync_archive".to_string(),
-                        data_size:         12 * 1024 * 1024 * 1024,
-                        card_id:           "NIKON_001".to_string(),
-                        device_overridden: false,
+                        source_media_dir:          Some("/media/source_media/nikon_z9".to_string()),
+                        source_device:             "Sony SF-G 64GB".to_string(),
+                        transfer_function:         "rsync_archive".to_string(),
+                        data_size:                 12 * 1024 * 1024 * 1024,
+                        card_id:                   "NIKON_001".to_string(),
+                        device_overridden:         false,
+                        storage_device_overridden: false,
+                        card_id_overridden:        false,
                     },
                     response_tx,
                     update_rx,
                     has_auto_detected_source_media: true,
+                    has_auto_detected_storage_device: true,
+                    available_storage_devices: dummy_storage_devices_approve.clone(),
                 }), false).unwrap();
+
+                let auto_detected_source_device           = "Sony SF-G 64GB".to_string();
+                let mut current_source_media_dir          = Some("/media/source_media/nikon_z9".to_string());
+                let mut current_source_device             = auto_detected_source_device.clone();
+                let mut current_card_id                   = "NIKON_001".to_string();
+                let mut current_device_overridden         = false;
+                let mut current_storage_device_overridden = false;
+                let mut current_card_id_overridden        = false;
 
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
                         ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
-                            let (new_source_media_dir, new_card_id, device_overridden) = match selection {
+                            let (new_source_media_dir, new_card_id, new_device_overridden) = match selection {
                                 ui_api::SourceMediaSelection::Auto => (
                                     Some("/media/source_media/nikon_z9".to_string()),
-                                    "NIKON_001".to_string(),
+                                    current_card_id.clone(),
                                     false,
                                 ),
                                 ui_api::SourceMediaSelection::Overridden(directory) => (
@@ -242,14 +268,53 @@ pub fn run() -> ! {
                                     true,
                                 ),
                             };
+                            current_source_media_dir  = new_source_media_dir.clone();
+                            current_card_id           = new_card_id.clone();
+                            current_device_overridden = new_device_overridden;
                             let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
                             let update = ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir:  new_source_media_dir,
-                                source_device:     "Sony SF-G 64GB (SN: 123456)".to_string(),
-                                transfer_function: "rsync_archive".to_string(),
-                                data_size:         12 * 1024 * 1024 * 1024,
-                                card_id:           new_card_id,
-                                device_overridden,
+                                source_media_dir:          new_source_media_dir,
+                                source_device:             current_source_device.clone(),
+                                transfer_function:         "rsync_archive".to_string(),
+                                data_size:                 12 * 1024 * 1024 * 1024,
+                                card_id:                   new_card_id,
+                                device_overridden:         current_device_overridden,
+                                storage_device_overridden: current_storage_device_overridden,
+                                card_id_overridden:        current_card_id_overridden,
+                            };
+                            let _ = update_tx.send(update);
+                        }
+                        ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id) => {
+                            let display = dummy_storage_devices_approve.iter()
+                                .find(|d| d.id == device_id)
+                                .map(|d| d.display_name.clone())
+                                .unwrap_or_default();
+                            current_source_device             = display.clone();
+                            current_storage_device_overridden = true;
+                            let update = ui_api::ApproveTransferQueryUpdate {
+                                source_media_dir:          current_source_media_dir.clone(),
+                                source_device:             display,
+                                transfer_function:         "rsync_archive".to_string(),
+                                data_size:                 12 * 1024 * 1024 * 1024,
+                                card_id:                   current_card_id.clone(),
+                                device_overridden:         current_device_overridden,
+                                storage_device_overridden: current_storage_device_overridden,
+                                card_id_overridden:        current_card_id_overridden,
+                            };
+                            let _ = update_tx.send(update);
+                        }
+                        ui_api::ApproveTransferResponse::StorageDeviceAuto => {
+                            current_source_device             = auto_detected_source_device.clone();
+                            current_storage_device_overridden = false;
+                            let update = ui_api::ApproveTransferQueryUpdate {
+                                source_media_dir:          current_source_media_dir.clone(),
+                                source_device:             current_source_device.clone(),
+                                transfer_function:         "rsync_archive".to_string(),
+                                data_size:                 12 * 1024 * 1024 * 1024,
+                                card_id:                   current_card_id.clone(),
+                                device_overridden:         current_device_overridden,
+                                storage_device_overridden: current_storage_device_overridden,
+                                card_id_overridden:        current_card_id_overridden,
                             };
                             let _ = update_tx.send(update);
                         }
@@ -282,7 +347,10 @@ pub fn run() -> ! {
                             });
                             break;
                         }
-                        ui_api::ApproveTransferResponse::CardIdChanged(_) => {}
+                        ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
+                            current_card_id = new_id;
+                            current_card_id_overridden = true;
+                        }
                         ui_api::ApproveTransferResponse::Denied => {
                             let _ = tx2.send(ui_api::TransferEvent::DeviceUnplugged);
                             break;
@@ -310,40 +378,79 @@ pub fn run() -> ! {
 
                     let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
                     let (update_tx, update_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
+                    let dummy_storage_devices_manual = dummy_storage_devices_for_manual.clone();
                     ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
                         data: ui_api::ApproveTransferQueryUpdate {
-                            source_media_dir:  None,
-                            source_device:     String::new(),
-                            transfer_function: String::new(),
-                            data_size:         0,
-                            card_id:           String::new(),
-                            device_overridden: false,
+                            source_media_dir:          None,
+                            source_device:             String::new(),
+                            transfer_function:         String::new(),
+                            data_size:                 0,
+                            card_id:                   String::new(),
+                            device_overridden:         false,
+                            storage_device_overridden: false,
+                            card_id_overridden:        false,
                         },
                         response_tx,
                         update_rx,
                         has_auto_detected_source_media: false,
+                        has_auto_detected_storage_device: false,
+                        available_storage_devices: dummy_storage_devices_manual.clone(),
                     }), false).unwrap();
 
                     thread::spawn(move || {
+                        let mut current_source_media_dir:          Option<String> = None;
+                        let mut current_source_device:             String         = String::new();
+                        let mut current_card_id:                   String         = String::new();
+                        let mut current_device_overridden:         bool           = false;
+                        let mut current_storage_device_overridden: bool           = false;
+                        let mut current_card_id_overridden:        bool           = false;
+
                         while let Ok(response) = response_rx.recv() {
                             match response {
                                 ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
-                                    let (new_source_media_dir, device_overridden) = match selection {
+                                    let (new_source_media_dir, new_device_overridden) = match selection {
                                         ui_api::SourceMediaSelection::Auto                    => (None, false),
                                         ui_api::SourceMediaSelection::Overridden(directory)  => (Some(directory), true),
                                     };
+                                    current_source_media_dir  = new_source_media_dir.clone();
+                                    current_device_overridden = new_device_overridden;
                                     let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
                                     let update = ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir:  new_source_media_dir,
-                                        source_device:     String::new(),
-                                        transfer_function: String::new(),
-                                        data_size:         0,
-                                        card_id:           String::new(),
-                                        device_overridden,
+                                        source_media_dir:          new_source_media_dir,
+                                        source_device:             current_source_device.clone(),
+                                        transfer_function:         String::new(),
+                                        data_size:                 0,
+                                        card_id:                   current_card_id.clone(),
+                                        device_overridden:         current_device_overridden,
+                                        storage_device_overridden: current_storage_device_overridden,
+                                        card_id_overridden:        current_card_id_overridden,
                                     };
                                     let _ = update_tx.send(update);
                                 }
-                                ui_api::ApproveTransferResponse::CardIdChanged(_) => {}
+                                ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id) => {
+                                    let display = dummy_storage_devices_manual.iter()
+                                        .find(|d| d.id == device_id)
+                                        .map(|d| d.display_name.clone())
+                                        .unwrap_or_default();
+                                    current_source_device             = display.clone();
+                                    current_storage_device_overridden = true;
+                                    let update = ui_api::ApproveTransferQueryUpdate {
+                                        source_media_dir:          current_source_media_dir.clone(),
+                                        source_device:             display,
+                                        transfer_function:         String::new(),
+                                        data_size:                 0,
+                                        card_id:                   current_card_id.clone(),
+                                        device_overridden:         current_device_overridden,
+                                        storage_device_overridden: current_storage_device_overridden,
+                                        card_id_overridden:        current_card_id_overridden,
+                                    };
+                                    let _ = update_tx.send(update);
+                                }
+                                ui_api::ApproveTransferResponse::StorageDeviceAuto => {}
+                                ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
+                                    current_card_id = new_id;
+                                    current_card_id_overridden = true;
+                                }
                                 ui_api::ApproveTransferResponse::Approved => {
                                     // TODO: start actual dummy transfer
                                     break;

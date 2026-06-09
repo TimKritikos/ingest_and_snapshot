@@ -43,6 +43,8 @@ pub enum ApproveTransferResponse {
     Denied,
     DeviceOverwrite(SourceMediaSelection),
     CardIdChanged(String),
+    StorageDeviceChanged(String), // storage device ID
+    StorageDeviceAuto,            // reset storage device to auto-detected
 }
 
 pub struct ConfirmCardIdQuery {
@@ -71,6 +73,8 @@ pub struct ApproveTransferQueryUpdate {
     pub data_size: u64,
     pub card_id: String,
     pub device_overridden: bool,
+    pub storage_device_overridden: bool,
+    pub card_id_overridden: bool,
 }
 
 pub struct ApproveTransferQuery {
@@ -81,6 +85,11 @@ pub struct ApproveTransferQuery {
     /// When false, the UI should not offer an "Auto-detected" option in the device picker,
     /// since returning to Auto would mean returning to no source media.
     pub has_auto_detected_source_media: bool,
+    /// Whether an auto-detected storage device exists for this transfer.
+    /// When true, the picker offers an "Auto-detected" option that sends StorageDeviceAuto.
+    pub has_auto_detected_storage_device: bool,
+    /// All known storage devices that can be selected as the destination for this transfer.
+    pub available_storage_devices: Vec<crate::StorageDeviceEntry>,
 }
 
 pub struct ScanNewDeviceQuery {
