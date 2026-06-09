@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use crossbeam_channel;
@@ -126,32 +126,50 @@ impl PendingTransferRegistry {
     /// Considers both existing directories in `source_media_dir/DATA/` and other pending
     /// transfers registered for the same source_media_dir (excluding `exclude_transfer`).
     ///
-    /// Returns `Err` on any I/O error. A missing DATA directory is treated as max=0
-    /// since it may not exist yet before the first ingest.
+    /// Returns `Err` on any I/O error or if the DATA directory does not exist.
     pub fn next_card_id(
         &self,
         source_media_dir: &Path,
         exclude_transfer: TransferId,
     ) -> Result<String, String> {
         let data_dir = source_media_dir.join(DATA_SUBDIRECTORY);
-        let fs_max   = filesystem_get_last_card_number(&data_dir)?;
+        let fs_max: Option<u32> = filesystem_get_last_card_number(&data_dir)?;
 
-        let registry_max = self.entries.get(source_media_dir)
-            .map(|entry| {
-                entry.transfers.iter()
-                    .filter(|&(&id, _)| id != exclude_transfer)
-                    .filter_map(|(_, card_id)| {
-                        match card_id {
-                            PendingCardId::Auto(id) => parse_card_number(id),
-                            PendingCardId::Manual { scheme_number, .. } => *scheme_number,
-                        }
-                    })
-                    .max()
-                    .unwrap_or(0)
-            })
+        let entry = self.entries.get(source_media_dir);
+
+        // Auto transfers (and the filesystem) define the sequential ceiling.
+        let auto_registry_max: Option<u32> = entry.and_then(|e| {
+            e.transfers.iter()
+                .filter(|&(&id, _)| id != exclude_transfer)
+                .filter_map(|(_, card_id)| match card_id {
+                    PendingCardId::Auto(id) => parse_card_number(id),
+                    PendingCardId::Manual { .. } => None,
+                })
+                .max()
+        });
+
+        // Manual transfers that conform to the scheme are obstacles: the auto system must
+        // skip over them rather than using them to raise its ceiling.
+        let manual_reserved: HashSet<u32> = entry.map(|e| {
+            e.transfers.iter()
+                .filter(|&(&id, _)| id != exclude_transfer)
+                .filter_map(|(_, card_id)| match card_id {
+                    PendingCardId::Manual { scheme_number: Some(n), .. } => Some(*n),
+                    _ => None,
+                })
+                .collect()
+        }).unwrap_or_default();
+
+        let base = [fs_max, auto_registry_max].into_iter().flatten().max()
+            .map(|m| m + 1)
             .unwrap_or(0);
 
-        format_card_id(fs_max.max(registry_max) + 1)
+        // Find the first slot >= base not already reserved by a manual transfer.
+        let mut next = base;
+        while manual_reserved.contains(&next) {
+            next += 1;
+        }
+        format_card_id(next)
     }
 
     /// Returns true if a directory named `card_id` already exists inside
@@ -185,17 +203,18 @@ pub fn parse_card_number(id: &str) -> Option<u32> {
     }
 }
 
-/// Get the last numerical id present in the provided data direcotry assuming the CARD%04d scheme.
-fn filesystem_get_last_card_number(data_dir: &Path) -> Result<u32, String> {
+/// Get the highest CARD#### number present in the provided data directory.
+/// Returns `Ok(None)` when the directory exists but contains no CARD#### entries.
+fn filesystem_get_last_card_number(data_dir: &Path) -> Result<Option<u32>, String> {
     match std::fs::read_dir(data_dir) {
         Err(e) => Err(format!("Failed to read DATA directory {:?}: {}", data_dir, e)),
         Ok(entries) => {
-            let mut max = 0u32;
+            let mut max: Option<u32> = None;
             for entry in entries {
                 let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
                 let name = entry.file_name();
                 if let Some(num) = parse_card_number(&name.to_string_lossy()) {
-                    max = max.max(num);
+                    max = Some(max.map_or(num, |m| m.max(num)));
                 }
             }
             Ok(max)

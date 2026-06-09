@@ -38,7 +38,7 @@ fn test_filesystem_max_card_number_not_found() {
 #[test]
 fn test_filesystem_max_card_number_empty_dir() {
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(0));
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(None));
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn test_filesystem_max_card_number_returns_max() {
     std::fs::create_dir(dir.path().join("CARD0001")).unwrap();
     std::fs::create_dir(dir.path().join("CARD0005")).unwrap();
     std::fs::create_dir(dir.path().join("CARD0003")).unwrap();
-    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(5));
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(Some(5)));
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn test_filesystem_max_card_number_ignores_non_card_entries() {
     std::fs::create_dir(dir.path().join("CARD0002")).unwrap();
     std::fs::create_dir(dir.path().join("notacard")).unwrap();
     std::fs::create_dir(dir.path().join("CARD")).unwrap();
-    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(2));
+    assert_eq!(filesystem_get_last_card_number(dir.path()), Ok(Some(2)));
 }
 
 #[test]
@@ -356,4 +356,171 @@ fn test_unregister_on_unregistered_dir_returns_error_and_does_not_notify() {
     let rx = registry.subscribe(dir_registered);
     assert!(registry.unregister(id, dir_unknown).is_err());
     assert!(rx.try_recv().is_err()); // registered dir was not notified
+}
+
+#[test]
+fn test_next_card_id_missing_data_dir_returns_error() {
+    let temp = tempfile::tempdir().unwrap();
+    // DATA subdirectory intentionally not created
+    let registry = PendingTransferRegistry::new();
+    assert!(registry.next_card_id(temp.path(), 0).is_err());
+}
+
+#[test]
+fn test_next_card_id_empty_data_dir_returns_card0000() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(DATA_SUBDIRECTORY)).unwrap();
+    let registry = PendingTransferRegistry::new();
+    assert_eq!(registry.next_card_id(temp.path(), 0).unwrap(), "CARD0000");
+}
+
+#[test]
+fn test_next_card_id_with_existing_filesystem_cards() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::create_dir(data_dir.join("CARD0003")).unwrap();
+    let registry = PendingTransferRegistry::new();
+    assert_eq!(registry.next_card_id(temp.path(), 0).unwrap(), "CARD0004");
+}
+
+#[test]
+fn test_next_card_id_with_pending_auto_transfer() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(DATA_SUBDIRECTORY)).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let other_id    = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(other_id, temp.path(), PendingCardId::Auto("CARD0003".to_string()));
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
+}
+
+#[test]
+fn test_next_card_id_excludes_the_querying_transfer() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(DATA_SUBDIRECTORY)).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let transfer_id = registry.new_transfer_internal_id();
+    registry.register(transfer_id, temp.path(), PendingCardId::Auto("CARD0005".to_string()));
+    // The transfer queries for its own next ID — its own CARD0005 must not count
+    // this is useful when the transfer needs to find a new id so it asks for it's next id and the
+    // one in currently holds shouldn't be counted.
+    assert_eq!(registry.next_card_id(temp.path(), transfer_id).unwrap(), "CARD0000");
+}
+
+#[test]
+fn test_next_card_id_takes_max_of_filesystem_and_registry() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::create_dir(data_dir.join("CARD0003")).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let other_id    = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(other_id, temp.path(), PendingCardId::Auto("CARD0005".to_string()));
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0006");
+}
+
+#[test]
+fn test_next_card_id_filesystem_beats_registry() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::create_dir(data_dir.join("CARD0007")).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let other_id    = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(other_id, temp.path(), PendingCardId::Auto("CARD0003".to_string()));
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0008");
+}
+
+#[test]
+fn test_next_card_id_skips_manual_reservation_at_base() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    for n in 0..=3u32 {
+        std::fs::create_dir(data_dir.join(format_card_id(n).unwrap())).unwrap();
+    }
+    let mut registry = PendingTransferRegistry::new();
+    let manual_id   = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(manual_id, temp.path(), PendingCardId::Manual {
+        id: "CARD0004".to_string(),
+        scheme_number: Some(4),
+    });
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0005");
+}
+
+#[test]
+fn test_next_card_id_skips_consecutive_manual_reservations() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    for n in 0..=3u32 {
+        std::fs::create_dir(data_dir.join(format_card_id(n).unwrap())).unwrap();
+    }
+    let mut registry = PendingTransferRegistry::new();
+    let manual_id_a = registry.new_transfer_internal_id();
+    let manual_id_b = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(manual_id_a, temp.path(), PendingCardId::Manual {
+        id: "CARD0004".to_string(),
+        scheme_number: Some(4),
+    });
+    registry.register(manual_id_b, temp.path(), PendingCardId::Manual {
+        id: "CARD0005".to_string(),
+        scheme_number: Some(5),
+    });
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0006");
+}
+
+#[test]
+fn test_next_card_id_manual_below_base_does_not_affect_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    for n in 0..=3u32 {
+        std::fs::create_dir(data_dir.join(format_card_id(n).unwrap())).unwrap();
+    }
+    let mut registry = PendingTransferRegistry::new();
+    let manual_id   = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(manual_id, temp.path(), PendingCardId::Manual {
+        id: "CARD0002".to_string(),
+        scheme_number: Some(2),
+    });
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
+}
+
+#[test]
+fn test_next_card_does_not_count_manual_transfers() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join(DATA_SUBDIRECTORY);
+    std::fs::create_dir(&data_dir).unwrap();
+    for n in 0..=3u32 {
+        std::fs::create_dir(data_dir.join(format_card_id(n).unwrap())).unwrap();
+    }
+    let mut registry = PendingTransferRegistry::new();
+    let manual_id   = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(manual_id, temp.path(), PendingCardId::Manual {
+        id: "CARD0006".to_string(),
+        scheme_number: Some(6),
+    });
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
+}
+
+#[test]
+fn test_next_card_id_ignores_manual_without_scheme_number() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(DATA_SUBDIRECTORY)).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let other_id    = registry.new_transfer_internal_id();
+    let querying_id = registry.new_transfer_internal_id();
+    registry.register(other_id, temp.path(), PendingCardId::Manual {
+        id: "some_freeform_id".to_string(),
+        scheme_number: None,
+    });
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0000");
 }
