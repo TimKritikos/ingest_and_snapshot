@@ -344,8 +344,17 @@ pub fn run() -> ! {
                             break;
                         }
                         ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
+                            current_card_id_overridden = !new_id.is_empty();
                             current_card_id = new_id;
-                            current_card_id_overridden = true;
+                            let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
+                                source_media_dir:          current_source_media_dir.clone(),
+                                source_device:             current_source_device.clone(),
+                                data_size:                 12 * 1024 * 1024 * 1024,
+                                card_id:                   current_card_id.clone(),
+                                device_overridden:         current_device_overridden,
+                                storage_device_overridden: current_storage_device_overridden,
+                                card_id_overridden:        current_card_id_overridden,
+                            });
                         }
                         ui_api::ApproveTransferResponse::Denied => {
                             let _ = tx2.send(ui_api::TransferEvent::DeviceUnplugged);
@@ -441,8 +450,17 @@ pub fn run() -> ! {
                                 }
                                 ui_api::ApproveTransferResponse::StorageDeviceAuto => {}
                                 ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
+                                    current_card_id_overridden = !new_id.is_empty();
                                     current_card_id = new_id;
-                                    current_card_id_overridden = true;
+                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
+                                        source_media_dir:          current_source_media_dir.clone(),
+                                        source_device:             current_source_device.clone(),
+                                        data_size:                 0,
+                                        card_id:                   current_card_id.clone(),
+                                        device_overridden:         current_device_overridden,
+                                        storage_device_overridden: current_storage_device_overridden,
+                                        card_id_overridden:        current_card_id_overridden,
+                                    });
                                 }
                                 ui_api::ApproveTransferResponse::Approved => {
                                     // TODO: start actual dummy transfer
