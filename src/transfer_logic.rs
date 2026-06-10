@@ -556,7 +556,8 @@ fn handle_card_id_changed(
     source_device: &str,
     device_overridden: bool,
     storage_device_overridden: bool,
-) {
+) { // TODO: check that if the field is now empty but no automatic id can be generated for whatever
+    // reason it gets handled correctly and add relevant test case
     let (final_id, pending, is_manual) = if new_id.is_empty() {
         // IF empty revert to auto if scheme supports it
         if let Some(dir) = source_dir {
