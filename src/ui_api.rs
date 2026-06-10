@@ -45,6 +45,8 @@ pub enum ApproveTransferResponse {
     CardIdChanged(String),
     StorageDeviceChanged(String), // storage device ID
     StorageDeviceAuto,            // reset storage device to auto-detected
+    DeviceLocationChanged(String), // new /dev/disk/by-id/ entry selected
+    DeviceLocationAuto,            // reset device location to auto-detected
 }
 
 pub struct ConfirmCardIdQuery {
@@ -74,6 +76,8 @@ pub struct ApproveTransferQueryUpdate {
     pub device_overridden: bool,
     pub storage_device_overridden: bool,
     pub card_id_overridden: bool,
+    pub device_location: Option<String>,
+    pub device_location_overridden: bool,
 }
 
 pub struct ApproveTransferQuery {
@@ -89,6 +93,11 @@ pub struct ApproveTransferQuery {
     pub has_auto_detected_storage_device: bool,
     /// All known storage devices that can be selected as the destination for this transfer.
     pub available_storage_devices: Vec<crate::StorageDeviceEntry>,
+    /// Whether an auto-detected device location exists for this transfer.
+    /// When false the picker offers no "Auto-detected" option.
+    pub has_auto_detected_device_location: bool,
+    /// All currently connected allowed device locations (by-id names) the user can pick from.
+    pub available_device_locations: Vec<String>,
 }
 
 pub struct ScanNewDeviceQuery {
@@ -122,6 +131,21 @@ pub struct NoSourceMediaWarningQuery {
     pub response_tx: Sender<NoSourceMediaWarningResponse>,
 }
 
+pub enum NoDeviceLocationWarningReason {
+    NoneSelected,
+    NotFound,
+}
+
+pub enum NoDeviceLocationWarningResponse {
+    BackToQuery,
+    Cancel,
+}
+
+pub struct NoDeviceLocationWarningQuery {
+    pub reason: NoDeviceLocationWarningReason,
+    pub response_tx: Sender<NoDeviceLocationWarningResponse>,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     ScanNewDevice(ScanNewDeviceQuery),
@@ -130,6 +154,7 @@ pub enum UserQuery {
     SourceMediaWarnings(SourceMediaWarningsQuery),
     ConfirmCardId(ConfirmCardIdQuery),
     NoSourceMediaWarning(NoSourceMediaWarningQuery),
+    NoDeviceLocationWarning(NoDeviceLocationWarningQuery),
 }
 
 /// Messages the UI sends back to the main logic.

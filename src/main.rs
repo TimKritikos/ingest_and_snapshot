@@ -26,14 +26,14 @@ use std::env;
 use std::fs::File;
 use std::{thread, time};
 use std::sync::{Arc, Mutex};
-use crossbeam_channel::{self, Sender};
+use crossbeam_channel;
 use clap::Parser;
 use home::home_dir;
 use anyhow::{Result};
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
 use serde::{Deserialize, Serialize};
-use udev::MonitorBuilder;
+use udev::{Enumerator, MonitorBuilder};
 use std::ffi::OsStr;
 
 mod ui;
@@ -387,6 +387,55 @@ fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<
     Ok((entries, warnings))
 }
 
+/// Returns true if `by_id_name` (a `/dev/disk/by-id/` entry without the directory prefix)
+/// matches an `allow_entry` from the config list.
+///
+/// Matching rules:
+/// - Exact match always works.
+/// - Prefix match: if the entry does NOT contain `:` (i.e. has no LUN suffix), then any
+///   by-id name that starts with `{entry}-` also matches. This lets a single entry cover
+///   all LUN variants of an unidentifiable device (e.g. `usb-Generic_Card_Reader` matches
+///   both `usb-Generic_Card_Reader-0:0` and `usb-Generic_Card_Reader-0:1`).
+///   Entries that already include a `:` are treated as fully-qualified and only match exactly,
+///   which prevents accidentally matching partition entries like `usb-Foo-0:0-part1`.
+fn device_name_matches(by_id_name: &str, allow_entry: &str) -> bool {
+    if by_id_name == allow_entry {
+        return true;
+    }
+    if !allow_entry.contains(':') {
+        return by_id_name.starts_with(&format!("{}-", allow_entry));
+    }
+    false
+}
+
+/// Returns the `/dev/disk/by-id/` name to use for a device if it is on the allow list
+/// and not on the ignore list. Returns `None` if the device should be skipped.
+fn device_by_id_name(device: &udev::Device, allow_list: &[String], ignore_list: &[String]) -> Option<String> {
+    let devlinks = device.property_value("DEVLINKS")?;
+    let links = devlinks.to_string_lossy();
+
+    let by_id_names: Vec<String> = links
+        .split_whitespace()
+        .filter_map(|link| link.strip_prefix("/dev/disk/by-id/").map(str::to_owned))
+        .collect();
+
+    // Ignore list wins: if any by-id name matches an ignore entry, skip the device
+    for name in &by_id_names {
+        if ignore_list.iter().any(|entry| device_name_matches(name, entry)) {
+            return None;
+        }
+    }
+
+    // Return the first by-id name that matches an allow entry
+    for name in &by_id_names {
+        if allow_list.iter().any(|entry| device_name_matches(name, entry)) {
+            return Some(name.clone());
+        }
+    }
+
+    None
+}
+
 #[cfg_attr(feature = "dummy-ui-data", allow(unreachable_code))]
 fn main() {
     #[cfg(feature = "dummy-ui-data")]
@@ -435,6 +484,8 @@ fn main() {
 
     let registry = Arc::new(Mutex::new(transfer_registry::PendingTransferRegistry::new()));
 
+    let allow_device_list = config.allow_device_list.clone();
+    let ignore_device_list = config.ignore_device_list.clone();
     ui.lock().unwrap().add_config(config.allow_device_list, config.ignore_device_list).unwrap();
 
     let devices_config: DevicesConfig = {
@@ -564,7 +615,45 @@ fn main() {
         .listen()
         .unwrap();
 
-    let mut device_senders: HashMap<String, Sender<ui_api::TransferEvent>> = HashMap::new();
+    // by-id names of currently connected allowed block devices (the "device location" picker source)
+    let mut allowed_connected_devices: Vec<String> = Vec::new();
+    // maps udev syspath → by-id name so we can clean up on device removal
+    let mut syspath_to_by_id: HashMap<String, String> = HashMap::new();
+
+    // Enumerate devices that were already connected before the monitor started
+    {
+        let mut enumerator = Enumerator::new().unwrap();
+        enumerator.match_subsystem("block").unwrap();
+        let startup_devices: Vec<String> = enumerator.scan_devices().unwrap()
+            .filter_map(|device| {
+                device_by_id_name(&device, &allow_device_list, &ignore_device_list).map(|by_id_name| {
+                    let syspath = device.syspath().to_string_lossy().into_owned();
+                    syspath_to_by_id.insert(syspath, by_id_name.clone());
+                    by_id_name
+                })
+            })
+            .collect();
+        for by_id_name in &startup_devices {
+            if !allowed_connected_devices.contains(by_id_name) {
+                allowed_connected_devices.push(by_id_name.clone());
+            }
+        }
+        for by_id_name in startup_devices {
+            transfer_logic::spawn_transfer(
+                Arc::clone(&ui),
+                Arc::clone(&registry),
+                source_media_entries.clone(),
+                storage_devices.clone(),
+                allowed_connected_devices.clone(),
+                transfer_logic::DetectedTransferInfo {
+                    source_media:  None,
+                    card_id:       None,
+                    source_device: None,
+                    device_location: Some(by_id_name),
+                },
+            );
+        }
+    }
 
     'outer: loop {
         thread::sleep(time::Duration::from_millis(50));
@@ -580,10 +669,12 @@ fn main() {
                         Arc::clone(&registry),
                         source_media_entries.clone(),
                         storage_devices.clone(),
+                        allowed_connected_devices.clone(),
                         transfer_logic::DetectedTransferInfo {
                             source_media:  None,
                             card_id:       None,
                             source_device: None,
+                            device_location: None,
                         },
                     );
                 }
@@ -593,20 +684,32 @@ fn main() {
         for event in monitor.iter() {
             let device = event.device();
             let syspath = device.syspath().to_string_lossy().into_owned();
-            if device.action() == Some(OsStr::new("add")) && let Some(devlinks) = device.property_value("DEVLINKS") {
-                // DEVLINKS is a space-separated list of symlinks
-                let links = devlinks.to_string_lossy();
-                for link in links.split_whitespace() {
-                    if link.contains("/dev/disk/by-id/") {
-                        let (tx_control, rx_control) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
-                        device_senders.insert(syspath.clone(), tx_control);
-                        ui.lock().unwrap().new_transfer(None, rx_control).unwrap();
-                        break;
+            if device.action() == Some(OsStr::new("add")) {
+                if let Some(by_id_name) = device_by_id_name(&device, &allow_device_list, &ignore_device_list) {
+                    if !allowed_connected_devices.contains(&by_id_name) {
+                        allowed_connected_devices.push(by_id_name.clone());
                     }
+                    syspath_to_by_id.insert(syspath, by_id_name.clone());
+                    transfer_logic::spawn_transfer(
+                        Arc::clone(&ui),
+                        Arc::clone(&registry),
+                        source_media_entries.clone(),
+                        storage_devices.clone(),
+                        allowed_connected_devices.clone(),
+                        transfer_logic::DetectedTransferInfo {
+                            source_media:  None,
+                            card_id:       None,
+                            source_device: None,
+                            device_location: Some(by_id_name),
+                        },
+                    );
                 }
             } else if device.action() == Some(OsStr::new("remove")) {
-                if let Some(tx_control) = device_senders.remove(&syspath) {
-                    let _ = tx_control.send(ui_api::TransferEvent::DeviceUnplugged);
+                if let Some(by_id_name) = syspath_to_by_id.remove(&syspath) {
+                    // Only remove from the available list if no other connected device shares the same by-id name
+                    if !syspath_to_by_id.values().any(|id| id == &by_id_name) {
+                        allowed_connected_devices.retain(|id| id != &by_id_name);
+                    }
                 }
             }
         }

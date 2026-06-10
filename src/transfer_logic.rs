@@ -7,11 +7,16 @@ use crate::SourceMediaEntry;
 use crate::CardNamingScheme;
 use crate::transfer_registry::{PendingTransferRegistry, PendingCardId, TransferId};
 
+/// Sentinel device location meaning "use the local filesystem directly, no block device required".
+/// This is always included as a picker option and skips the /dev/disk/by-id/ existence check.
+pub const LOCAL_FILESYSTEM_DEVICE_LOCATION: &str = "local-filesystem";
+
 // Detected info provided at transfer start
 pub struct DetectedTransferInfo {
     pub source_media: Option<SourceMediaEntry>, //TODO: this probably should be an Option<String>
     pub card_id: Option<String>,
     pub source_device: Option<String>,
+    pub device_location: Option<String>,
 }
 
 pub fn spawn_transfer(
@@ -19,10 +24,11 @@ pub fn spawn_transfer(
     registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
+    all_device_locations: Vec<String>,
     detected: DetectedTransferInfo,
 ) {
     thread::spawn(move || {
-        run_transfer(ui, registry, all_source_media, all_storage_devices, detected);
+        run_transfer(ui, registry, all_source_media, all_storage_devices, all_device_locations, detected);
     });
 }
 
@@ -31,8 +37,16 @@ fn run_transfer(
     registry: Arc<Mutex<PendingTransferRegistry>>,
     all_source_media: Vec<SourceMediaEntry>,
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
+    all_device_locations: Vec<String>,
     detected: DetectedTransferInfo,
 ) {
+    // "Local filesystem" is always a valid device location option regardless of connected hardware
+    let all_device_locations = {
+        let mut locations = vec![LOCAL_FILESYSTEM_DEVICE_LOCATION.to_owned()];
+        locations.extend(all_device_locations);
+        locations
+    };
+
     // Assign a unique ID for this transfer in the registry
     let transfer_id: TransferId = registry.lock().unwrap().new_transfer_internal_id();
 
@@ -47,6 +61,10 @@ fn run_transfer(
     let mut current_device_overridden: bool = false;
     let mut current_storage_device_overridden: bool = false;
     let mut card_id_manually_set = false;
+
+    let auto_detected_device_location: Option<String> = detected.device_location.clone();
+    let mut current_device_location: Option<String> = auto_detected_device_location.clone();
+    let mut current_device_location_overridden: bool = false;
 
     // Compute the initial card ID and register with the registry
     let mut current_card_id = match initial_card_id_and_register(
@@ -106,12 +124,16 @@ fn run_transfer(
                           current_device_overridden,
                           current_storage_device_overridden,
                           card_id_manually_set,
+                          &current_device_location,
+                          current_device_location_overridden,
                       ),
                 response_tx,
                 update_rx,
                 has_auto_detected_source_media: detected.source_media.is_some(),
                 has_auto_detected_storage_device: auto_detected_device_id.is_some(),
                 available_storage_devices: all_storage_devices.clone(),
+                has_auto_detected_device_location: auto_detected_device_location.is_some(),
+                available_device_locations: all_device_locations.clone(),
             }),
             show_priority,
         ).is_err() {
@@ -160,6 +182,8 @@ fn run_transfer(
                                     &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                     current_storage_device_overridden,
                                     &mut notify_rx,
+                                    &current_device_location,
+                                    current_device_location_overridden,
                                 );
                             }
                         }
@@ -177,6 +201,8 @@ fn run_transfer(
                                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                 current_device_overridden,
                                 current_storage_device_overridden,
+                                &current_device_location,
+                                current_device_location_overridden,
                             );
                         }
                         Ok(ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id)) => {
@@ -191,6 +217,8 @@ fn run_transfer(
                                 current_device_overridden,
                                 current_storage_device_overridden,
                                 card_id_manually_set,
+                                &current_device_location,
+                                current_device_location_overridden,
                             ));
                         }
                         Ok(ui_api::ApproveTransferResponse::StorageDeviceAuto) => {
@@ -204,6 +232,38 @@ fn run_transfer(
                                 current_device_overridden,
                                 current_storage_device_overridden,
                                 card_id_manually_set,
+                                &current_device_location,
+                                current_device_location_overridden,
+                            ));
+                        }
+                        Ok(ui_api::ApproveTransferResponse::DeviceLocationChanged(location)) => {
+                            current_device_location = Some(location);
+                            current_device_location_overridden = true;
+                            let _ = update_tx.send(query_update_from_state(
+                                &current_source_media_dir,
+                                &all_source_media,
+                                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                &current_card_id,
+                                current_device_overridden,
+                                current_storage_device_overridden,
+                                card_id_manually_set,
+                                &current_device_location,
+                                current_device_location_overridden,
+                            ));
+                        }
+                        Ok(ui_api::ApproveTransferResponse::DeviceLocationAuto) => {
+                            current_device_location = auto_detected_device_location.clone();
+                            current_device_location_overridden = false;
+                            let _ = update_tx.send(query_update_from_state(
+                                &current_source_media_dir,
+                                &all_source_media,
+                                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                &current_card_id,
+                                current_device_overridden,
+                                current_storage_device_overridden,
+                                card_id_manually_set,
+                                &current_device_location,
+                                current_device_location_overridden,
                             ));
                         }
                         Err(_) => {
@@ -240,6 +300,8 @@ fn run_transfer(
                                         current_device_overridden,
                                         current_storage_device_overridden,
                                         card_id_manually_set,
+                                        &current_device_location,
+                                        current_device_location_overridden,
                                     ));
                                 }
                                 Ok(_) => {} // ID unchanged — skip to avoid self-notification loop
@@ -288,6 +350,66 @@ fn run_transfer(
                 }
             }
         };
+
+        // Check device location
+        match &current_device_location {
+            None => {
+                let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::NoDeviceLocationWarningResponse>();
+                if ui.lock().unwrap().user_query(
+                    ui_api::UserQuery::NoDeviceLocationWarning(ui_api::NoDeviceLocationWarningQuery {
+                        reason: ui_api::NoDeviceLocationWarningReason::NoneSelected,
+                        response_tx: warn_tx,
+                    }),
+                    true,
+                ).is_err() {
+                    registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                        .expect("unregister: transfer must be registered before unregistering");
+                    return;
+                }
+                match warn_rx.recv() {
+                    Ok(ui_api::NoDeviceLocationWarningResponse::BackToQuery) | Err(_) => {
+                        is_re_approval = true;
+                        continue 'approval_loop;
+                    }
+                    Ok(ui_api::NoDeviceLocationWarningResponse::Cancel) => {
+                        let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                        registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                            .expect("unregister: transfer must be registered before unregistering");
+                        return;
+                    }
+                }
+            }
+            Some(location) if location != LOCAL_FILESYSTEM_DEVICE_LOCATION => {
+                let by_id_path = std::path::Path::new("/dev/disk/by-id").join(location);
+                if !by_id_path.exists() {
+                    let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::NoDeviceLocationWarningResponse>();
+                    if ui.lock().unwrap().user_query(
+                        ui_api::UserQuery::NoDeviceLocationWarning(ui_api::NoDeviceLocationWarningQuery {
+                            reason: ui_api::NoDeviceLocationWarningReason::NotFound,
+                            response_tx: warn_tx,
+                        }),
+                        true,
+                    ).is_err() {
+                        registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                            .expect("unregister: transfer must be registered before unregistering");
+                        return;
+                    }
+                    match warn_rx.recv() {
+                        Ok(ui_api::NoDeviceLocationWarningResponse::BackToQuery) | Err(_) => {
+                            is_re_approval = true;
+                            continue 'approval_loop;
+                        }
+                        Ok(ui_api::NoDeviceLocationWarningResponse::Cancel) => {
+                            let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                            registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                                .expect("unregister: transfer must be registered before unregistering");
+                            return;
+                        }
+                    }
+                }
+            }
+            Some(_) => {} // LOCAL_FILESYSTEM_DEVICE_LOCATION — no block device check needed
+        }
 
         let scheme = source_media_scheme(&source_dir, &all_source_media);
 
@@ -485,6 +607,8 @@ fn handle_device_overwrite(
     source_device: &str,
     storage_device_overridden: bool,
     notify_rx: &mut crossbeam_channel::Receiver<()>,
+    device_location: &Option<String>,
+    device_location_overridden: bool,
 ) {
     // Determine the card ID to carry into the new source media entry.
     // Manually set IDs are kept as-is; auto IDs are regenerated for the new dir.
@@ -540,6 +664,8 @@ fn handle_device_overwrite(
         device_overridden,
         storage_device_overridden,
         *card_id_manually_set,
+        device_location,
+        device_location_overridden,
     ));
 }
 
@@ -556,6 +682,8 @@ fn handle_card_id_changed(
     source_device: &str,
     device_overridden: bool,
     storage_device_overridden: bool,
+    device_location: &Option<String>,
+    device_location_overridden: bool,
 ) { // TODO: check that if the field is now empty but no automatic id can be generated for whatever
     // reason it gets handled correctly and add relevant test case
     let (final_id, pending, is_manual) = if new_id.is_empty() {
@@ -607,6 +735,8 @@ fn handle_card_id_changed(
         device_overridden,
         storage_device_overridden,
         is_manual,
+        device_location,
+        device_location_overridden,
     ));
 }
 
@@ -625,6 +755,8 @@ fn query_update_from_state(
     device_overridden: bool,
     storage_device_overridden: bool,
     card_id_overridden: bool,
+    device_location: &Option<String>,
+    device_location_overridden: bool,
 ) -> ui_api::ApproveTransferQueryUpdate {
     ui_api::ApproveTransferQueryUpdate {
         source_media_dir: source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -634,6 +766,8 @@ fn query_update_from_state(
         device_overridden,
         storage_device_overridden,
         card_id_overridden,
+        device_location: device_location.clone(),
+        device_location_overridden,
     }
 }
 
