@@ -223,8 +223,9 @@ fn run_transfer(
                         if matches!(source_media_scheme(&dir, &all_source_media), CardNamingScheme::Card)
                             && !card_id_manually_set
                         {
-                            match registry.lock().unwrap().next_card_id(&dir, transfer_id) {
-                                Ok(new_id) => {
+                            let next_card_id_result = registry.lock().unwrap().next_card_id(&dir, transfer_id);
+                            match next_card_id_result {
+                                Ok(new_id) if new_id != current_card_id => {
                                     current_card_id = new_id.clone();
                                     registry.lock().unwrap().update_id(
                                         transfer_id,
@@ -241,6 +242,7 @@ fn run_transfer(
                                         card_id_manually_set,
                                     ));
                                 }
+                                Ok(_) => {} // ID unchanged — skip to avoid self-notification loop
                                 Err(e) => {
                                     show_card_id_error(&ui, None, format!("Failed to regenerate card ID: {}", e));
                                 }
@@ -306,7 +308,8 @@ fn run_transfer(
 
         // For Card scheme: also check if there would be a sequence gap
         let sequence_conflict = if matches!(scheme, CardNamingScheme::Card) && !is_taken {
-            match registry.lock().unwrap().next_card_id(&source_dir, transfer_id) {
+            let next_card_id_result = registry.lock().unwrap().next_card_id(&source_dir, transfer_id);
+            match next_card_id_result {
                 Ok(next_sequential) => next_sequential != current_card_id,
                 Err(e) => {
                     show_card_id_error(&ui, Some(&transfer_event_tx), format!("Error computing next card ID: {}", e));
