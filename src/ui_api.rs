@@ -69,7 +69,6 @@ pub enum ConfirmCardIdResponse {
 pub struct ApproveTransferQueryUpdate {
     pub source_media_dir: Option<String>,
     pub source_device: String,
-    pub transfer_function: String,
     pub data_size: u64,
     pub card_id: String,
     pub device_overridden: bool,

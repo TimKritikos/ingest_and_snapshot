@@ -628,7 +628,6 @@ fn query_update_from_state(
     ui_api::ApproveTransferQueryUpdate {
         source_media_dir: source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
         source_device: source_device.to_owned(),
-        transfer_function: String::new(),
         data_size: 0,
         card_id: card_id.to_owned(),
         device_overridden,

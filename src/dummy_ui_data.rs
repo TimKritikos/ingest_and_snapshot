@@ -231,7 +231,6 @@ pub fn run() -> ! {
                     data: ui_api::ApproveTransferQueryUpdate {
                         source_media_dir:          Some("/media/source_media/nikon_z9".to_string()),
                         source_device:             "Sony SF-G 64GB".to_string(),
-                        transfer_function:         "rsync_archive".to_string(),
                         data_size:                 12 * 1024 * 1024 * 1024,
                         card_id:                   "NIKON_001".to_string(),
                         device_overridden:         false,
@@ -275,7 +274,6 @@ pub fn run() -> ! {
                             let update = ui_api::ApproveTransferQueryUpdate {
                                 source_media_dir:          new_source_media_dir,
                                 source_device:             current_source_device.clone(),
-                                transfer_function:         "rsync_archive".to_string(),
                                 data_size:                 12 * 1024 * 1024 * 1024,
                                 card_id:                   new_card_id,
                                 device_overridden:         current_device_overridden,
@@ -294,7 +292,6 @@ pub fn run() -> ! {
                             let update = ui_api::ApproveTransferQueryUpdate {
                                 source_media_dir:          current_source_media_dir.clone(),
                                 source_device:             display,
-                                transfer_function:         "rsync_archive".to_string(),
                                 data_size:                 12 * 1024 * 1024 * 1024,
                                 card_id:                   current_card_id.clone(),
                                 device_overridden:         current_device_overridden,
@@ -309,7 +306,6 @@ pub fn run() -> ! {
                             let update = ui_api::ApproveTransferQueryUpdate {
                                 source_media_dir:          current_source_media_dir.clone(),
                                 source_device:             current_source_device.clone(),
-                                transfer_function:         "rsync_archive".to_string(),
                                 data_size:                 12 * 1024 * 1024 * 1024,
                                 card_id:                   current_card_id.clone(),
                                 device_overridden:         current_device_overridden,
@@ -383,7 +379,6 @@ pub fn run() -> ! {
                         data: ui_api::ApproveTransferQueryUpdate {
                             source_media_dir:          None,
                             source_device:             String::new(),
-                            transfer_function:         String::new(),
                             data_size:                 0,
                             card_id:                   String::new(),
                             device_overridden:         false,
@@ -418,7 +413,6 @@ pub fn run() -> ! {
                                     let update = ui_api::ApproveTransferQueryUpdate {
                                         source_media_dir:          new_source_media_dir,
                                         source_device:             current_source_device.clone(),
-                                        transfer_function:         String::new(),
                                         data_size:                 0,
                                         card_id:                   current_card_id.clone(),
                                         device_overridden:         current_device_overridden,
@@ -437,7 +431,6 @@ pub fn run() -> ! {
                                     let update = ui_api::ApproveTransferQueryUpdate {
                                         source_media_dir:          current_source_media_dir.clone(),
                                         source_device:             display,
-                                        transfer_function:         String::new(),
                                         data_size:                 0,
                                         card_id:                   current_card_id.clone(),
                                         device_overridden:         current_device_overridden,

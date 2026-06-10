@@ -436,25 +436,12 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![Span::styled("   Source media: ", label), Span::styled("[S] ", hint_style), Span::styled(device_name_str, device_values_style), Span::styled(
-            if data.device_overridden {
-                " (overridden)"
-            }else{
-                ""
-            }, overwritten)]),
+            if data.device_overridden { " (overridden)" } else { "" }, overwritten)]),
         Line::from(vec![Span::styled("        Card ID: ", label), Span::styled("[C] ", hint_style), Span::styled(data.card_id.as_str(), value), Span::styled(
-            if data.card_id_overridden {
-                " (overridden)"
-            }else{
-                ""
-            }, overwritten)]),
+            if data.card_id_overridden { " (overridden)" } else { "" }, overwritten)]),
         Line::from(vec![Span::styled(" Storage device: ", label), Span::styled("[D] ", hint_style), Span::styled(data.source_device.as_str(), value), Span::styled(
-            if data.storage_device_overridden {
-                " (overridden)"
-            }else{
-                ""
-            }, overwritten)]),
+            if data.storage_device_overridden { " (overridden)" } else { "" }, overwritten)]),
         Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled(size_str, value)]),
-        //Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled("    ", hint_style), Span::styled(size_str, value)]),
     ];
 
     frame.render_widget(Paragraph::new(lines), area);
