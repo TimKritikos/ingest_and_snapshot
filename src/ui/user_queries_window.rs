@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect, Layout, Direction, Constraint};
 use ratatui::style::{Color, Style, Modifier};
@@ -7,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
@@ -19,6 +20,15 @@ pub struct QueryWindowState {
     pub card_id_entry: Option<TextEntryState>,
     pub device_location_picker_open: bool,
     pub device_location_picker_selection: usize,
+    pub input_path_picker_open: bool,
+    pub input_path_picker_selection: usize,
+    /// The actual OS directory currently displayed in the input path picker.
+    pub input_path_picker_current_dir: Option<PathBuf>,
+    /// Mount root constraint: the picker cannot navigate above this path.
+    /// `None` means the full filesystem is browsable (local-filesystem transfers).
+    pub input_path_picker_mount_root: Option<PathBuf>,
+    /// Entries in the current picker directory: (display label, actual OS path, is_dir).
+    pub input_path_picker_entries: Vec<(String, PathBuf, bool)>,
 }
 
 impl QueryWindowState {
@@ -32,6 +42,11 @@ impl QueryWindowState {
             card_id_entry: None,
             device_location_picker_open: false,
             device_location_picker_selection: 0,
+            input_path_picker_open: false,
+            input_path_picker_selection: 0,
+            input_path_picker_current_dir: None,
+            input_path_picker_mount_root: None,
+            input_path_picker_entries: Vec::new(),
         }
     }
 }
@@ -41,6 +56,7 @@ fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
         && data.card_id.value().is_some_and(|id| !id.is_empty())
         && data.source_device.value().is_some_and(|d| !d.is_empty())
         && data.device_location.value().is_some()
+        && data.input_path.value().is_some()
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
@@ -115,6 +131,49 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     KeyCode::Esc => { state.device_location_picker_open = false; }
                     _ => {}
                 }
+            } else if state.input_path_picker_open {
+                let entry_count = state.input_path_picker_entries.len();
+                match key.code {
+                    KeyCode::Up   => { state.input_path_picker_selection = state.input_path_picker_selection.saturating_sub(1); }
+                    KeyCode::Down => { state.input_path_picker_selection = (state.input_path_picker_selection + 1).min(entry_count.saturating_sub(1)); }
+                    KeyCode::Char(' ') => {
+                        // Select the currently browsed directory itself as the input path.
+                        if let Some(ref current_dir) = state.input_path_picker_current_dir.clone() {
+                            let virtual_path = actual_to_virtual(current_dir, state.input_path_picker_mount_root.as_deref());
+                            let _ = query.response_tx.send(ApproveTransferResponse::InputPathChanged(virtual_path));
+                            state.input_path_picker_open = false;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some((_, actual_path, is_dir)) = state.input_path_picker_entries.get(state.input_path_picker_selection).cloned() {
+                            if is_dir {
+                                let is_parent_entry = state.input_path_picker_entries
+                                    .get(state.input_path_picker_selection)
+                                    .map(|(label, _, _)| label == "..")
+                                    .unwrap_or(false);
+                                if is_parent_entry {
+                                    // Navigate up — already verified we can above the current dir
+                                    let new_dir = actual_path;
+                                    state.input_path_picker_entries = load_dir_entries(&new_dir, state.input_path_picker_mount_root.as_deref());
+                                    state.input_path_picker_current_dir = Some(new_dir);
+                                    state.input_path_picker_selection = 0;
+                                } else {
+                                    // Navigate into directory
+                                    state.input_path_picker_entries = load_dir_entries(&actual_path, state.input_path_picker_mount_root.as_deref());
+                                    state.input_path_picker_current_dir = Some(actual_path);
+                                    state.input_path_picker_selection = 0;
+                                }
+                            } else {
+                                // Select file as input path
+                                let virtual_path = actual_to_virtual(&actual_path, state.input_path_picker_mount_root.as_deref());
+                                let _ = query.response_tx.send(ApproveTransferResponse::InputPathChanged(virtual_path));
+                                state.input_path_picker_open = false;
+                            }
+                        }
+                    }
+                    KeyCode::Esc => { state.input_path_picker_open = false; }
+                    _ => {}
+                }
             } else {
                 match key.code {
                     KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -128,6 +187,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                     KeyCode::Char('l') | KeyCode::Char('L') => {
                         state.device_location_picker_open = true;
                         state.device_location_picker_selection = 0;
+                    }
+                    KeyCode::Char('i') | KeyCode::Char('I') => {
+                        // Only open the picker when input_path is not frozen.
+                        if !matches!(query.initial_data.input_path, TransferFieldState::Frozen) {
+                            let mount_root = query.initial_data.input_path_mount_root.clone();
+                            let start_dir = compute_picker_start_dir(
+                                query.initial_data.input_path.value(),
+                                mount_root.as_deref(),
+                            );
+                            state.input_path_picker_entries = load_dir_entries(&start_dir, mount_root.as_deref());
+                            state.input_path_picker_mount_root = mount_root;
+                            state.input_path_picker_current_dir = Some(start_dir);
+                            state.input_path_picker_selection = 0;
+                            state.input_path_picker_open = true;
+                        }
                     }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state.card_id_entry = Some(TextEntryState::new(query.initial_data.card_id.value().cloned().unwrap_or_default()));
@@ -233,6 +307,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::NoInputPathWarning(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
+                    if let Some(UserQuery::NoInputPathWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NoInputPathWarningResponse::BackToQuery);
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(UserQuery::NoInputPathWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NoInputPathWarningResponse::Cancel);
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -280,6 +369,8 @@ pub fn render(
                 render_storage_device_picker(frame, &query.available_storage_devices, query.initial_data.source_device.value().map(|s| s.as_str()).unwrap_or(""), query.initial_data.source_device.is_overridden(), query.has_auto_detected_storage_device, state.storage_device_picker_selection);
             } else if state.device_location_picker_open {
                 render_device_location_picker(frame, &query.available_device_locations, query.initial_data.device_location.value().map(|s| s.as_str()), query.initial_data.device_location.is_overridden(), query.has_auto_detected_device_location, state.device_location_picker_selection);
+            } else if state.input_path_picker_open {
+                render_input_path_picker(frame, state);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
@@ -288,6 +379,7 @@ pub fn render(
         UserQuery::ConfirmCardId(query) => render_confirm_card_id(frame, padded, query),
         UserQuery::NoSourceMediaWarning(_) => render_no_source_media_warning(frame, padded),
         UserQuery::NoDeviceLocationWarning(query) => render_no_device_location_warning(frame, padded, &query.reason),
+        UserQuery::NoInputPathWarning(_) => render_no_input_path_warning(frame, padded),
     }
 }
 
@@ -340,6 +432,106 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
             Span::styled(" Deny   ", hint),
         ])),
         rows[1],
+    );
+}
+
+/// Converts an actual OS path to the virtual path shown to the user.
+/// When `mount_root` is set the virtual path is relative to the card root (starts with "/").
+fn actual_to_virtual(actual: &Path, mount_root: Option<&Path>) -> PathBuf {
+    if let Some(root) = mount_root {
+        let relative = actual.strip_prefix(root).unwrap_or(Path::new(""));
+        PathBuf::from("/").join(relative)
+    } else {
+        actual.to_owned()
+    }
+}
+
+/// Computes the OS directory the input-path picker should open in.
+fn compute_picker_start_dir(virtual_path: Option<&PathBuf>, mount_root: Option<&Path>) -> PathBuf {
+    match (virtual_path, mount_root) {
+        (Some(vp), Some(root)) => {
+            let stripped = vp.strip_prefix("/").unwrap_or(vp.as_path());
+            root.join(stripped)
+        }
+        (Some(vp), None) => vp.clone(),
+        (None, Some(root)) => root.to_owned(),
+        (None, None) => PathBuf::from("/"),
+    }
+}
+
+/// Loads directory entries for the input-path picker from `actual_dir`.
+/// The first entry is ".." when navigating above `mount_root` is still possible.
+/// Returns `Vec<(display_label, actual_os_path, is_dir)>`.
+fn load_dir_entries(actual_dir: &Path, mount_root: Option<&Path>) -> Vec<(String, PathBuf, bool)> {
+    let mut entries: Vec<(String, PathBuf, bool)> = Vec::new();
+
+    let can_go_up = match mount_root {
+        Some(root) => actual_dir != root,
+        None       => actual_dir != Path::new("/"),
+    };
+    if can_go_up {
+        if let Some(parent) = actual_dir.parent() {
+            entries.push(("..".to_owned(), parent.to_owned(), true));
+        }
+    }
+
+    if let Ok(read_dir) = std::fs::read_dir(actual_dir) {
+        let mut children: Vec<(String, PathBuf, bool)> = read_dir
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = entry.path();
+                let is_dir = path.is_dir();
+                let label = if is_dir { format!("{}/", name) } else { name };
+                Some((label, path, is_dir))
+            })
+            .collect();
+        children.sort_by(|a, b| {
+            // Directories before files, then alphabetically
+            b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0))
+        });
+        entries.extend(children);
+    }
+
+    entries
+}
+
+fn render_input_path_picker(frame: &mut Frame, state: &QueryWindowState) {
+    let hint_style = Style::default().fg(Color::Black);
+    let ok_style   = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let esc_style  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let space_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    let hint = Line::from(vec![
+        Span::styled("[Space]", space_style),
+        Span::styled(" Select dir   ", hint_style),
+        Span::styled("[Enter]", ok_style),
+        Span::styled(" Open/Select   ", hint_style),
+        Span::styled("[Esc]", esc_style),
+        Span::styled(" Cancel", hint_style),
+    ]);
+
+    // Build the title showing the virtual path currently being browsed.
+    let current_virtual = state.input_path_picker_current_dir.as_deref()
+        .map(|d| actual_to_virtual(d, state.input_path_picker_mount_root.as_deref()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_owned());
+    let title = format!("Browse: {}", current_virtual);
+
+    let items: Vec<tui_dialog_widgets::DialogFloatingListItem> = state.input_path_picker_entries
+        .iter()
+        .map(|(label, _, _)| tui_dialog_widgets::DialogFloatingListItem {
+            label: label.clone(),
+            is_current: false,
+        })
+        .collect();
+
+    frame.render_widget(
+        tui_dialog_widgets::DialogFloatingList::new(&title)
+            .items(items)
+            .selected(state.input_path_picker_selection)
+            .hint(hint),
+        frame.area(),
     );
 }
 
@@ -537,11 +729,20 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
         }
     };
 
+    // input_path stores a PathBuf; convert to String for field_line.
+    let input_path_display: TransferFieldState<String> = match &data.input_path {
+        TransferFieldState::Frozen               => TransferFieldState::Frozen,
+        TransferFieldState::AutoSelected(None)   => TransferFieldState::AutoSelected(None),
+        TransferFieldState::AutoSelected(Some(p)) => TransferFieldState::AutoSelected(Some(p.to_string_lossy().into_owned())),
+        TransferFieldState::Overridden(p)        => TransferFieldState::Overridden(p.to_string_lossy().into_owned()),
+    };
+
     let lines: Vec<Line> = vec![
         field_line("    Source media: ", Some("[S] "), &source_media_display),
         field_line("         Card ID: ", Some("[C] "), &data.card_id),
         field_line("  Storage device: ", Some("[D] "), &data.source_device),
         field_line(" Device location: ", Some("[L] "), &device_location_display),
+        field_line("      Input path: ", Some("[I] "), &input_path_display),
         Line::from(vec![
             Span::styled("  Transfer Size: ", label_style),
             Span::styled(size_str,            value_style),
@@ -980,6 +1181,35 @@ fn render_no_device_location_warning(frame: &mut Frame, area: Rect, reason: &NoD
         Line::from(vec![Span::styled(reason_text, warning)]),
         Line::from(""),
         Line::from(vec![Span::styled(detail_text, label)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter]", back),
+            Span::styled(" Back to query   ", hint),
+            Span::styled("[Esc]", cancel),
+            Span::styled(" Cancel transfer", hint),
+        ]),
+    ];
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
+}
+
+fn render_no_input_path_warning(frame: &mut Frame, area: Rect) {
+    let warning = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let label   = Style::default().fg(Color::Black);
+    let hint    = Style::default().fg(Color::Black);
+    let back    = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let cancel  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(vec![Span::styled("Warning: no input path selected", warning)]),
+        Line::from(""),
+        Line::from(vec![Span::styled("An input path must be selected before a transfer can proceed.", label)]),
+        Line::from(vec![Span::styled("Press [I] in the transfer dialog to choose a directory or file.", label)]),
         Line::from(""),
         Line::from(vec![
             Span::styled("[Enter]", back),

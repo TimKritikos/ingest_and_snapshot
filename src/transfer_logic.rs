@@ -12,6 +12,17 @@ use crate::mount_manager::MountManager;
 /// This is always included as a picker option and skips the /dev/disk/by-id/ existence check.
 pub const LOCAL_FILESYSTEM_DEVICE_LOCATION: &str = "local-filesystem";
 
+/// Tracks the user-facing input path: the virtual directory from which data will be read.
+/// `virtual_path` is relative to the device root (e.g. `PathBuf::from("/DCIM")`).
+/// When the source is a block device, `mount_root` is the OS mountpoint that maps "/" to the card root.
+/// When `is_frozen` is true the field is locked and neither sub-field should be trusted.
+struct InputPathState {
+    is_frozen: bool,
+    virtual_path: Option<std::path::PathBuf>,
+    mount_root: Option<std::path::PathBuf>,
+    is_overridden: bool,
+}
+
 // Detected info provided at transfer start
 pub struct DetectedTransferInfo {
     pub source_media: Option<SourceMediaEntry>, //TODO: this probably should be an Option<String>
@@ -120,6 +131,25 @@ fn run_transfer(
         .map(|loc| loc != LOCAL_FILESYSTEM_DEVICE_LOCATION)
         .unwrap_or(false);
 
+    // Input path state — tracks the virtual directory from which data will be read.
+    let mut input_path_state = InputPathState {
+        is_frozen: needs_frozen_until_mount,
+        virtual_path: if !needs_frozen_until_mount {
+            // Local filesystem transfers start at the root; all other cases start empty.
+            match auto_detected_device_location.as_deref() {
+                Some(loc) if loc == LOCAL_FILESYSTEM_DEVICE_LOCATION => Some(PathBuf::from("/")),
+                _ => None,
+            }
+        } else {
+            None
+        },
+        mount_root: None,
+        is_overridden: false,
+    };
+    // Receives the OS mountpoint when an async block-device mount completes.
+    // Replaced with `never()` once consumed, or when a new mount supersedes the old one.
+    let mut mount_result_rx: crossbeam_channel::Receiver<PathBuf> = crossbeam_channel::never();
+
     'approval_loop: loop {
 
         // Create approve transfer window
@@ -135,6 +165,8 @@ fn run_transfer(
                 data_size:        0,
                 card_id:          ui_api::TransferFieldState::Frozen,
                 device_location:  ui_api::TransferFieldState::AutoSelected(current_device_location.clone()),
+                input_path:       ui_api::TransferFieldState::Frozen,
+                input_path_mount_root: None,
             }
         } else {
             query_update_from_state(
@@ -147,6 +179,7 @@ fn run_transfer(
                 card_id_manually_set,
                 &current_device_location,
                 current_device_location_overridden,
+                &input_path_state,
             )
         };
         if ui.lock().unwrap().user_query(
@@ -176,20 +209,14 @@ fn run_transfer(
             if let Some(ref location) = current_device_location {
                 if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
                     if let Some(real_path) = current_real_device_path.clone() {
-                        // When fields started frozen, unfreeze them to AutoSelected(None) once the
-                        // filesystem is mounted so the user can see the dialog is ready for input.
-                        let on_mount_success: Option<Box<dyn FnOnce() + Send + 'static>> =
+                        // When fields started frozen, unfreeze them once the filesystem is mounted.
+                        // A channel is used so the select! loop can react with full current state.
+                        let on_mount_success: Option<Box<dyn FnOnce(PathBuf) + Send + 'static>> =
                             if needs_frozen_until_mount {
-                                let tx = update_tx.clone();
-                                let known_location = current_device_location.clone();
-                                Some(Box::new(move || {
-                                    let _ = tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: ui_api::TransferFieldState::AutoSelected(None),
-                                        source_device:    ui_api::TransferFieldState::AutoSelected(None),
-                                        data_size:        0,
-                                        card_id:          ui_api::TransferFieldState::AutoSelected(None),
-                                        device_location:  ui_api::TransferFieldState::AutoSelected(known_location),
-                                    });
+                                let (tx, rx) = crossbeam_channel::unbounded::<PathBuf>();
+                                mount_result_rx = rx;
+                                Some(Box::new(move |mountpoint: PathBuf| {
+                                    let _ = tx.send(mountpoint);
                                 }))
                             } else {
                                 None
@@ -244,6 +271,7 @@ fn run_transfer(
                                     &mut notify_rx,
                                     &current_device_location,
                                     current_device_location_overridden,
+                                    &input_path_state,
                                 );
                             }
                         }
@@ -263,6 +291,7 @@ fn run_transfer(
                                 current_storage_device_overridden,
                                 &current_device_location,
                                 current_device_location_overridden,
+                                &input_path_state,
                             );
                         }
                         Ok(ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id)) => {
@@ -279,6 +308,7 @@ fn run_transfer(
                                 card_id_manually_set,
                                 &current_device_location,
                                 current_device_location_overridden,
+                                &input_path_state,
                             ));
                         }
                         Ok(ui_api::ApproveTransferResponse::StorageDeviceAuto) => {
@@ -294,6 +324,24 @@ fn run_transfer(
                                 card_id_manually_set,
                                 &current_device_location,
                                 current_device_location_overridden,
+                                &input_path_state,
+                            ));
+                        }
+                        Ok(ui_api::ApproveTransferResponse::InputPathChanged(new_virtual_path)) => {
+                            input_path_state.is_overridden = true;
+                            input_path_state.is_frozen = false;
+                            input_path_state.virtual_path = Some(new_virtual_path);
+                            let _ = update_tx.send(query_update_from_state(
+                                &current_source_media_dir,
+                                &all_source_media,
+                                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                                &current_card_id,
+                                current_device_overridden,
+                                current_storage_device_overridden,
+                                card_id_manually_set,
+                                &current_device_location,
+                                current_device_location_overridden,
+                                &input_path_state,
                             ));
                         }
                         Ok(ui_api::ApproveTransferResponse::DeviceLocationChanged(location)) => {
@@ -302,14 +350,44 @@ fn run_transfer(
                                 let real_path = std::fs::canonicalize(&by_id_path).ok();
                                 current_real_device_path = real_path.clone();
                                 if let Some(real_path) = real_path {
-                                    let _ = crate::mount_manager::start_mount(
-                                        real_path, location.clone(), transfer_id,
-                                        Arc::clone(&mount_manager), Arc::clone(&ui),
-                                        None,
-                                    );
+                                    if let Some(existing_mountpoint) = crate::mount_manager::get_mountpoint_for_real_device(&real_path, &mount_manager) {
+                                        // Already mounted — use it immediately.
+                                        input_path_state.is_frozen = false;
+                                        input_path_state.virtual_path = Some(PathBuf::from("/"));
+                                        input_path_state.mount_root = Some(existing_mountpoint);
+                                        input_path_state.is_overridden = false;
+                                        mount_result_rx = crossbeam_channel::never();
+                                    } else {
+                                        // Not yet mounted — start mount and wait for async notification.
+                                        let (mount_tx, mount_rx) = crossbeam_channel::unbounded::<PathBuf>();
+                                        mount_result_rx = mount_rx;
+                                        let _ = crate::mount_manager::start_mount(
+                                            real_path, location.clone(), transfer_id,
+                                            Arc::clone(&mount_manager), Arc::clone(&ui),
+                                            Some(Box::new(move |mountpoint: PathBuf| {
+                                                let _ = mount_tx.send(mountpoint);
+                                            })),
+                                        );
+                                        input_path_state.is_frozen = true;
+                                        input_path_state.virtual_path = None;
+                                        input_path_state.mount_root = None;
+                                        input_path_state.is_overridden = false;
+                                    }
+                                } else {
+                                    // Device path could not be resolved — freeze input path.
+                                    input_path_state.is_frozen = true;
+                                    input_path_state.virtual_path = None;
+                                    input_path_state.mount_root = None;
+                                    input_path_state.is_overridden = false;
+                                    mount_result_rx = crossbeam_channel::never();
                                 }
                             } else {
                                 current_real_device_path = None;
+                                input_path_state.is_frozen = false;
+                                input_path_state.virtual_path = Some(PathBuf::from("/"));
+                                input_path_state.mount_root = None;
+                                input_path_state.is_overridden = false;
+                                mount_result_rx = crossbeam_channel::never();
                             }
                             current_device_location = Some(location);
                             current_device_location_overridden = true;
@@ -323,21 +401,51 @@ fn run_transfer(
                                 card_id_manually_set,
                                 &current_device_location,
                                 current_device_location_overridden,
+                                &input_path_state,
                             ));
                         }
                         Ok(ui_api::ApproveTransferResponse::DeviceLocationAuto) => {
                             current_device_location = auto_detected_device_location.clone();
                             current_device_location_overridden = false;
                             current_real_device_path = auto_detected_real_device_path.clone();
-                            if let Some(ref location) = current_device_location {
-                                if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
-                                    if let Some(real_path) = current_real_device_path.clone() {
+                            match (&current_device_location, &current_real_device_path) {
+                                (Some(loc), _) if loc == LOCAL_FILESYSTEM_DEVICE_LOCATION => {
+                                    input_path_state.is_frozen = false;
+                                    input_path_state.virtual_path = Some(PathBuf::from("/"));
+                                    input_path_state.mount_root = None;
+                                    input_path_state.is_overridden = false;
+                                    mount_result_rx = crossbeam_channel::never();
+                                }
+                                (Some(location), Some(real_path)) => {
+                                    if let Some(existing_mountpoint) = crate::mount_manager::get_mountpoint_for_real_device(real_path, &mount_manager) {
+                                        input_path_state.is_frozen = false;
+                                        input_path_state.virtual_path = Some(PathBuf::from("/"));
+                                        input_path_state.mount_root = Some(existing_mountpoint);
+                                        input_path_state.is_overridden = false;
+                                        mount_result_rx = crossbeam_channel::never();
+                                    } else {
+                                        let (mount_tx, mount_rx) = crossbeam_channel::unbounded::<PathBuf>();
+                                        mount_result_rx = mount_rx;
                                         let _ = crate::mount_manager::start_mount(
-                                            real_path, location.clone(), transfer_id,
+                                            real_path.clone(), location.clone(), transfer_id,
                                             Arc::clone(&mount_manager), Arc::clone(&ui),
-                                            None,
+                                            Some(Box::new(move |mountpoint: PathBuf| {
+                                                let _ = mount_tx.send(mountpoint);
+                                            })),
                                         );
+                                        input_path_state.is_frozen = true;
+                                        input_path_state.virtual_path = None;
+                                        input_path_state.mount_root = None;
+                                        input_path_state.is_overridden = false;
                                     }
+                                }
+                                _ => {
+                                    // No device location — no path either.
+                                    input_path_state.is_frozen = false;
+                                    input_path_state.virtual_path = None;
+                                    input_path_state.mount_root = None;
+                                    input_path_state.is_overridden = false;
+                                    mount_result_rx = crossbeam_channel::never();
                                 }
                             }
                             let _ = update_tx.send(query_update_from_state(
@@ -350,6 +458,7 @@ fn run_transfer(
                                 card_id_manually_set,
                                 &current_device_location,
                                 current_device_location_overridden,
+                                &input_path_state,
                             ));
                         }
                         Err(_) => {
@@ -360,6 +469,27 @@ fn run_transfer(
                             return;
                         }
                     }
+                }
+                recv(mount_result_rx) -> result => {
+                    if let Ok(mountpoint) = result {
+                        // Block device mounted — unfreeze input path and send full state update.
+                        input_path_state.is_frozen = false;
+                        input_path_state.virtual_path = Some(PathBuf::from("/"));
+                        input_path_state.mount_root = Some(mountpoint);
+                        let _ = update_tx.send(query_update_from_state(
+                            &current_source_media_dir,
+                            &all_source_media,
+                            &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                            &current_card_id,
+                            current_device_overridden,
+                            current_storage_device_overridden,
+                            card_id_manually_set,
+                            &current_device_location,
+                            current_device_location_overridden,
+                            &input_path_state,
+                        ));
+                    }
+                    mount_result_rx = crossbeam_channel::never();
                 }
                 recv(notify_rx) -> result => {
                     if result.is_err() {
@@ -388,6 +518,7 @@ fn run_transfer(
                                         card_id_manually_set,
                                         &current_device_location,
                                         current_device_location_overridden,
+                                        &input_path_state,
                                     ));
                                 }
                                 Ok(_) => {} // ID unchanged — skip to avoid self-notification loop
@@ -495,6 +626,33 @@ fn run_transfer(
                 }
             }
             Some(_) => {} // LOCAL_FILESYSTEM_DEVICE_LOCATION — no block device check needed
+        }
+
+        // Check input path
+        if input_path_state.is_frozen || input_path_state.virtual_path.is_none() {
+            let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::NoInputPathWarningResponse>();
+            if ui.lock().unwrap().user_query(
+                ui_api::UserQuery::NoInputPathWarning(ui_api::NoInputPathWarningQuery {
+                    response_tx: warn_tx,
+                }),
+                true,
+            ).is_err() {
+                registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                    .expect("unregister: transfer must be registered before unregistering");
+                return;
+            }
+            match warn_rx.recv() {
+                Ok(ui_api::NoInputPathWarningResponse::BackToQuery) | Err(_) => {
+                    is_re_approval = true;
+                    continue 'approval_loop;
+                }
+                Ok(ui_api::NoInputPathWarningResponse::Cancel) => {
+                    let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                    registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                        .expect("unregister: transfer must be registered before unregistering");
+                    return;
+                }
+            }
         }
 
         let scheme = source_media_scheme(&source_dir, &all_source_media);
@@ -702,6 +860,7 @@ fn handle_device_overwrite(
     notify_rx: &mut crossbeam_channel::Receiver<()>,
     device_location: &Option<String>,
     device_location_overridden: bool,
+    input_path_state: &InputPathState,
 ) {
     // Determine the card ID to carry into the new source media entry.
     // Manually set IDs are kept as-is; auto IDs are regenerated for the new dir.
@@ -759,6 +918,7 @@ fn handle_device_overwrite(
         *card_id_manually_set,
         device_location,
         device_location_overridden,
+        input_path_state,
     ));
 }
 
@@ -777,6 +937,7 @@ fn handle_card_id_changed(
     storage_device_overridden: bool,
     device_location: &Option<String>,
     device_location_overridden: bool,
+    input_path_state: &InputPathState,
 ) { // TODO: check that if the field is now empty but no automatic id can be generated for whatever
     // reason it gets handled correctly and add relevant test case
     let (final_id, pending, is_manual) = if new_id.is_empty() {
@@ -830,6 +991,7 @@ fn handle_card_id_changed(
         is_manual,
         device_location,
         device_location_overridden,
+        input_path_state,
     ));
 }
 
@@ -850,6 +1012,7 @@ fn query_update_from_state(
     card_id_overridden: bool,
     device_location: &Option<String>,
     device_location_overridden: bool,
+    input_path: &InputPathState,
 ) -> ui_api::ApproveTransferQueryUpdate {
     let source_media_dir_str = source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
     ui_api::ApproveTransferQueryUpdate {
@@ -874,6 +1037,16 @@ fn query_update_from_state(
         } else {
             ui_api::TransferFieldState::AutoSelected(device_location.clone())
         },
+        input_path: if input_path.is_frozen {
+            ui_api::TransferFieldState::Frozen
+        } else if input_path.is_overridden {
+            ui_api::TransferFieldState::Overridden(
+                input_path.virtual_path.clone().unwrap_or_else(|| PathBuf::from("/")),
+            )
+        } else {
+            ui_api::TransferFieldState::AutoSelected(input_path.virtual_path.clone())
+        },
+        input_path_mount_root: input_path.mount_root.clone(),
     }
 }
 

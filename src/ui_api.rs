@@ -19,6 +19,7 @@
 
 /// This module defines the protocol between the main application logic and any UI backend.
 
+use std::path::PathBuf;
 use crossbeam_channel::{Receiver, Sender};
 
 pub struct TransferSample {
@@ -73,6 +74,7 @@ pub enum ApproveTransferResponse {
     StorageDeviceAuto,            // reset storage device to auto-detected
     DeviceLocationChanged(String), // new /dev/disk/by-id/ entry selected
     DeviceLocationAuto,            // reset device location to auto-detected
+    InputPathChanged(PathBuf),     // user selected a new virtual input path
 }
 
 pub struct ConfirmCardIdQuery {
@@ -100,6 +102,12 @@ pub struct ApproveTransferQueryUpdate {
     pub data_size: u64,
     pub card_id: TransferFieldState<String>,
     pub device_location: TransferFieldState<String>,
+    /// Virtual path on the source device (e.g. `PathBuf::from("/DCIM")`).
+    /// Frozen while the block device is not yet mounted.
+    pub input_path: TransferFieldState<PathBuf>,
+    /// Actual OS mountpoint of the source block device, if one is mounted.
+    /// `None` for local-filesystem transfers (where the virtual path IS the actual path).
+    pub input_path_mount_root: Option<PathBuf>,
 }
 
 pub struct ApproveTransferQuery {
@@ -168,6 +176,15 @@ pub struct NoDeviceLocationWarningQuery {
     pub response_tx: Sender<NoDeviceLocationWarningResponse>,
 }
 
+pub enum NoInputPathWarningResponse {
+    BackToQuery,
+    Cancel,
+}
+
+pub struct NoInputPathWarningQuery {
+    pub response_tx: Sender<NoInputPathWarningResponse>,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     ScanNewDevice(ScanNewDeviceQuery),
@@ -177,6 +194,7 @@ pub enum UserQuery {
     ConfirmCardId(ConfirmCardIdQuery),
     NoSourceMediaWarning(NoSourceMediaWarningQuery),
     NoDeviceLocationWarning(NoDeviceLocationWarningQuery),
+    NoInputPathWarning(NoInputPathWarningQuery),
 }
 
 /// Messages the UI sends back to the main logic.

@@ -97,7 +97,7 @@ pub fn start_mount(
     transfer_id: TransferId,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
-    on_mount_success: Option<Box<dyn FnOnce() + Send + 'static>>,
+    on_mount_success: Option<Box<dyn FnOnce(PathBuf) + Send + 'static>>,
 ) -> Option<MountId> {
     let (id, mountpoint) = {
         let mut guard = manager.lock().unwrap();
@@ -253,7 +253,7 @@ fn mount_thread(
     mountpoint: PathBuf,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
-    on_mount_success: Option<Box<dyn FnOnce() + Send + 'static>>,
+    on_mount_success: Option<Box<dyn FnOnce(PathBuf) + Send + 'static>>,
 ) {
     // Device absent before we even started (race between udev event and thread start)
     // — remove the entry entirely, nothing to show.
@@ -320,7 +320,7 @@ fn mount_thread(
     let _ = ui.lock().unwrap().mount_update(MountUpdate::MountCompleted { id, fs_type });
 
     if let Some(callback) = on_mount_success {
-        callback();
+        callback(mountpoint.clone());
     }
 
     // TODO: Read source_media_data.json and other metadata from the mounted filesystem
@@ -359,6 +359,17 @@ pub fn find_by_id_names_for_device(real_device_path: &Path) -> Vec<String> {
         }
     }
     result
+}
+
+/// Returns the mountpoint of the device at `real_device_path` if it is currently mounted.
+/// Returns `None` if the device is not tracked, still mounting, or failed to mount.
+pub fn get_mountpoint_for_real_device(
+    real_device_path: &Path,
+    manager: &Arc<Mutex<MountManager>>,
+) -> Option<PathBuf> {
+    manager.lock().unwrap().mounts.iter()
+        .find(|m| m.real_device_path == real_device_path && m.is_mounted)
+        .map(|m| m.mountpoint.clone())
 }
 
 fn detect_fs_type_from_mountinfo(mountpoint: &Path) -> Option<String> {
