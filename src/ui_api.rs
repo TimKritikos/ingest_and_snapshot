@@ -140,6 +140,7 @@ pub enum FatalErrorKind {
     SourceMedia(String),
     BackupLog(String),
     CardId(String),
+    Transfer(String),
 }
 
 pub struct FatalErrorQuery {

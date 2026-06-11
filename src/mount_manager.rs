@@ -372,6 +372,29 @@ pub fn get_mountpoint_for_real_device(
         .map(|m| m.mountpoint.clone())
 }
 
+/// Remounts an already-mounted block device as read-write.
+/// Finds the mountpoint by `real_device_path` and issues an `MS_REMOUNT` without `MS_RDONLY`.
+/// Returns an error if the device is not currently tracked as mounted, or if the kernel rejects
+/// the remount (e.g. filesystem does not support read-write, or hardware write-protection is set).
+pub fn remount_readwrite(
+    real_device_path: &Path,
+    manager: &Arc<Mutex<MountManager>>,
+) -> Result<(), String> {
+    let mountpoint = manager.lock().unwrap()
+        .mounts.iter()
+        .find(|m| m.real_device_path == real_device_path && m.is_mounted)
+        .map(|m| m.mountpoint.clone())
+        .ok_or_else(|| format!("Device {:?} is not currently mounted", real_device_path))?;
+
+    nix::mount::mount(
+        Some(real_device_path),
+        mountpoint.as_path(),
+        None::<&str>,
+        MsFlags::MS_REMOUNT,
+        None::<&str>,
+    ).map_err(|e| format!("Failed to remount {:?} as read-write: {}", real_device_path, e))
+}
+
 fn detect_fs_type_from_mountinfo(mountpoint: &Path) -> Option<String> {
     let mountpoint_str = mountpoint.to_str()?;
     let content = std::fs::read_to_string("/proc/self/mountinfo").ok()?;

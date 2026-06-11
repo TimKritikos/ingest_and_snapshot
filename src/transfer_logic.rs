@@ -784,8 +784,41 @@ fn run_transfer(
             .expect("unregister: transfer must be registered before unregistering");
     }
 
+    // The data move is performed by the system GNU `mv` binary (see move_card_data).
+    // Confirm it is GNU coreutils before doing any further work, so we bail out early
+    // instead of remounting and then moving with an implementation that may not
+    // preserve timestamps.
+    if let Err(reason) = ensure_system_mv_is_gnu() {
+        show_transfer_error(&ui, &transfer_event_tx, reason);
+        return;
+    }
+
+    // Remount the source block device read-write so data can be deleted after the move.
+    // Local-filesystem transfers skip this — no block device is involved.
+    if let (Some(location), Some(real_device_path)) = (&current_device_location, &current_real_device_path) {
+        if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
+            if let Err(reason) = crate::mount_manager::remount_readwrite(real_device_path, &mount_manager) {
+                show_transfer_error(
+                    &ui,
+                    &transfer_event_tx,
+                    format!("Could not remount source device as read-write: {}", reason),
+                );
+                return;
+            }
+        }
+    }
+
     // Step 4: Move the data
-    // TODO
+    // The approval loop only breaks after a source media dir was selected and its card
+    // directory was created, so both values are valid here.
+    let source_media_dir = current_source_media_dir.clone()
+        .expect("approval loop only completes with a source media dir selected");
+    let destination_dir = source_media_dir.join("DATA").join(&current_card_id);
+    let move_result = resolve_source_data_dir(&input_path_state)
+        .and_then(|source_data_dir| move_card_data(&source_data_dir, &destination_dir, &transfer_event_tx));
+    if let Err(error_message) = move_result {
+        show_transfer_error(&ui, &transfer_event_tx, error_message);
+    }
 
     // Step 5: Write the backup log entry
     // TODO
@@ -1090,4 +1123,203 @@ fn create_card_directory(source_media_dir: &std::path::Path, card_id: &str) -> R
     let path = source_media_dir.join("DATA").join(card_id);
     std::fs::create_dir_all(&path)
         .map_err(|e| format!("Failed to create card directory {:?}: {}", path, e))
+}
+
+/// Interval between transfer progress samples sent to the UI transfer graph.
+const TRANSFER_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The system `mv` binary used to move card data (see [`move_card_data`]).
+const SYSTEM_MV_BINARY: &str = "mv";
+
+/// Marker string present in `mv --version` output for GNU coreutils' implementation.
+const GNU_COREUTILS_VERSION_MARKER: &str = "GNU coreutils";
+
+/// Confirm that the system `mv` is GNU coreutils' implementation.
+///
+/// The data move relies on GNU `mv` preserving access and modification timestamps when
+/// it falls back to copy-and-delete across filesystems (see [`move_card_data`]). Other
+/// implementations (e.g. busybox) make no such guarantee, so we refuse to run a transfer
+/// with them rather than silently lose the original timestamps.
+fn ensure_system_mv_is_gnu() -> Result<(), String> {
+    let version_output = std::process::Command::new(SYSTEM_MV_BINARY)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("Could not run `{} --version`: {}", SYSTEM_MV_BINARY, e))?;
+
+    if !version_output.status.success() {
+        return Err(format!(
+            "`{} --version` exited with a failure status; cannot confirm it is GNU coreutils",
+            SYSTEM_MV_BINARY,
+        ));
+    }
+
+    let version_text = String::from_utf8_lossy(&version_output.stdout);
+    if version_text.contains(GNU_COREUTILS_VERSION_MARKER) {
+        Ok(())
+    } else {
+        let reported_version = version_text.lines().next().unwrap_or("<no output>");
+        Err(format!(
+            "System `{}` is not GNU coreutils, so access/modification timestamps would not be \
+             preserved across a cross-filesystem move. `--version` reported: {}",
+            SYSTEM_MV_BINARY, reported_version,
+        ))
+    }
+}
+
+/// Milliseconds since the UNIX epoch, used to timestamp transfer graph samples.
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Resolves the actual directory the data will be read from: the OS mountpoint of the
+/// source block device joined with the user-facing virtual input path, or the virtual
+/// path itself for local-filesystem transfers (where it already is an actual path).
+fn resolve_source_data_dir(input_path_state: &InputPathState) -> Result<PathBuf, String> {
+    let virtual_path = input_path_state.virtual_path.as_ref()
+        .ok_or_else(|| "No input path was selected".to_owned())?;
+    match &input_path_state.mount_root {
+        Some(mount_root) => {
+            // The virtual path is absolute relative to the card root ("/DCIM"), so the
+            // leading "/" must be dropped before joining it onto the mountpoint.
+            let path_within_device = virtual_path.strip_prefix("/").unwrap_or(virtual_path);
+            Ok(mount_root.join(path_within_device))
+        }
+        None => Ok(virtual_path.clone()),
+    }
+}
+
+/// Total size in bytes of all regular files under `dir`, recursively.
+/// Symlinks are not followed, matching what a non-dereferencing copy transfers.
+fn directory_size_bytes(dir: &std::path::Path) -> std::io::Result<u64> {
+    let mut total_bytes: u64 = 0;
+    let mut pending_dirs = vec![dir.to_path_buf()];
+    while let Some(current_dir) = pending_dirs.pop() {
+        for entry in std::fs::read_dir(&current_dir)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?; // does not follow symlinks
+            if metadata.is_dir() {
+                pending_dirs.push(entry.path());
+            } else if metadata.is_file() {
+                total_bytes += metadata.len();
+            }
+        }
+    }
+    Ok(total_bytes)
+}
+
+/// Moves the source data at `source_path` into the (already-created) card directory
+/// `destination_dir` by invoking the system GNU `mv` binary, while periodically
+/// reporting progress to the UI transfer graph through `transfer_event_tx`.
+///
+/// `source_path` may be either a directory, whose *contents* are moved into the card
+/// directory (like `mv source/* dest/`, so the directory itself does not become a
+/// subdirectory), or a single file, which is moved into the card directory as-is.
+///
+/// The move is delegated to GNU `mv` (rather than a Rust reimplementation) because
+/// the card and the destination are typically on different filesystems, which forces
+/// `mv` to fall back to copy-and-delete. GNU `mv` preserves the original access and
+/// modification timestamps (as well as mode and ownership) across that fallback;
+/// uutils' `uu_mv` does not. Callers must have already confirmed the system `mv` is
+/// GNU coreutils via [`ensure_system_mv_is_gnu`].
+///
+/// The change timestamp (ctime) is intentionally not preserved: Linux offers no way
+/// to set it, as the kernel updates it on every inode modification.
+fn move_card_data(
+    source_path: &std::path::Path,
+    destination_dir: &std::path::Path,
+    transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
+) -> Result<(), String> {
+    // metadata() follows symlinks, so a symlink pointing at a directory is still treated
+    // as a directory whose contents are moved.
+    let source_metadata = std::fs::metadata(source_path)
+        .map_err(|e| format!("Failed to inspect source path {:?}: {}", source_path, e))?;
+
+    // A directory move transfers its contents; a file move transfers the file itself.
+    let (source_entries, bytes_total): (Vec<PathBuf>, u64) = if source_metadata.is_dir() {
+        let bytes_total = directory_size_bytes(source_path)
+            .map_err(|e| format!("Failed to measure size of source data at {:?}: {}", source_path, e))?;
+        let directory_entries: Vec<PathBuf> = std::fs::read_dir(source_path)
+            .and_then(|entries| {
+                entries.map(|entry| entry.map(|e| e.path())).collect()
+            })
+            .map_err(|e| format!("Failed to list source directory {:?}: {}", source_path, e))?;
+        (directory_entries, bytes_total)
+    } else {
+        (vec![source_path.to_path_buf()], source_metadata.len())
+    };
+
+    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total });
+
+    if source_entries.is_empty() {
+        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
+            ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total },
+        ]));
+        return Ok(());
+    }
+
+    // GNU `mv` blocks until the whole move is done and offers no progress callback, so it
+    // runs on a worker thread while this thread samples the destination size. `-t` names
+    // the target directory and `--` stops option parsing so source paths beginning with a
+    // dash are never mistaken for flags.
+    let (move_result_tx, move_result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+    let move_destination = destination_dir.to_owned();
+    thread::spawn(move || {
+        let move_command_output = std::process::Command::new(SYSTEM_MV_BINARY)
+            .arg("--target-directory")
+            .arg(&move_destination)
+            .arg("--")
+            .args(&source_entries)
+            .output();
+        let result = match move_command_output {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+            Err(spawn_error) => Err(format!("Could not run `{}`: {}", SYSTEM_MV_BINARY, spawn_error)),
+        };
+        let _ = move_result_tx.send(result);
+    });
+
+    loop {
+        crossbeam_channel::select! {
+            recv(move_result_rx) -> result => {
+                return match result {
+                    Ok(Ok(())) => {
+                        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
+                            ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total },
+                        ]));
+                        Ok(())
+                    }
+                    Ok(Err(message)) => Err(format!("Failed to move data to {:?}: {}", destination_dir, message)),
+                    Err(_) => Err("Move thread exited without reporting a result".to_owned()),
+                };
+            }
+            default(TRANSFER_SAMPLE_INTERVAL) => {
+                if let Ok(bytes_done) = directory_size_bytes(destination_dir) {
+                    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
+                        ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done },
+                    ]));
+                }
+            }
+        }
+    }
+}
+
+// Show a fatal transfer error dialog and remove the transfer from the UI.
+fn show_transfer_error(
+    ui: &Arc<Mutex<Box<dyn UiBackend>>>,
+    transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
+    message: String,
+) {
+    let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+    let _ = ui.lock().unwrap().user_query(
+        ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            error: ui_api::FatalErrorKind::Transfer(message),
+            response_tx,
+        }),
+        true,
+    );
+    let _ = response_rx.recv();
+    let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
 }

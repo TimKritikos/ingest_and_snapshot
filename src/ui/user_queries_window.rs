@@ -843,6 +843,7 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
         FatalErrorKind::SourceMedia(msg) => ("Failed to load source media configurations", msg.as_str()),
         FatalErrorKind::BackupLog(msg)   => ("Failed to load backup log", msg.as_str()),
         FatalErrorKind::CardId(msg)      => ("Card ID handling error", msg.as_str()),
+        FatalErrorKind::Transfer(msg)    => ("Data transfer error", msg.as_str()),
     };
 
     let rows = Layout::default()
