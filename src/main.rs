@@ -40,6 +40,7 @@ mod ui;
 mod ui_api;
 mod transfer_logic;
 mod transfer_registry;
+mod mount_manager;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -408,9 +409,11 @@ fn device_name_matches(by_id_name: &str, allow_entry: &str) -> bool {
     false
 }
 
-/// Returns the `/dev/disk/by-id/` name to use for a device if it is on the allow list
+/// Returns `(real_device_path, by_id_name)` for a device if it is on the allow list
 /// and not on the ignore list. Returns `None` if the device should be skipped.
-fn device_by_id_name(device: &udev::Device, allow_list: &[String], ignore_list: &[String]) -> Option<String> {
+/// `real_device_path` is the actual block device node (e.g. `/dev/sdb1`).
+/// `by_id_name` is the `/dev/disk/by-id/` entry name used for display and allow/ignore checks.
+fn device_allowed_info(device: &udev::Device, allow_list: &[String], ignore_list: &[String]) -> Option<(PathBuf, String)> {
     let devlinks = device.property_value("DEVLINKS")?;
     let links = devlinks.to_string_lossy();
 
@@ -426,10 +429,11 @@ fn device_by_id_name(device: &udev::Device, allow_list: &[String], ignore_list: 
         }
     }
 
-    // Return the first by-id name that matches an allow entry
+    // Return the first by-id name that matches an allow entry, plus the real device node path
     for name in &by_id_names {
         if allow_list.iter().any(|entry| device_name_matches(name, entry)) {
-            return Some(name.clone());
+            let real_device_path = PathBuf::from(device.devnode()?);
+            return Some((real_device_path, name.clone()));
         }
     }
 
@@ -483,6 +487,7 @@ fn main() {
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> = Arc::new(Mutex::new(Box::new(tui_backend)));
 
     let registry = Arc::new(Mutex::new(transfer_registry::PendingTransferRegistry::new()));
+    let mount_manager = Arc::new(Mutex::new(mount_manager::MountManager::new()));
 
     let allow_device_list = config.allow_device_list.clone();
     let ignore_device_list = config.ignore_device_list.clone();
@@ -619,37 +624,42 @@ fn main() {
     let mut allowed_connected_devices: Vec<String> = Vec::new();
     // maps udev syspath → by-id name so we can clean up on device removal
     let mut syspath_to_by_id: HashMap<String, String> = HashMap::new();
+    // maps udev syspath → real device node path so we can call remove_mounts_for_device
+    let mut syspath_to_real_path: HashMap<String, PathBuf> = HashMap::new();
 
     // Enumerate devices that were already connected before the monitor started
     {
         let mut enumerator = Enumerator::new().unwrap();
         enumerator.match_subsystem("block").unwrap();
-        let startup_devices: Vec<String> = enumerator.scan_devices().unwrap()
+        let startup_devices: Vec<(PathBuf, String)> = enumerator.scan_devices().unwrap()
             .filter_map(|device| {
-                device_by_id_name(&device, &allow_device_list, &ignore_device_list).map(|by_id_name| {
+                device_allowed_info(&device, &allow_device_list, &ignore_device_list).map(|(real_path, by_id_name)| {
                     let syspath = device.syspath().to_string_lossy().into_owned();
-                    syspath_to_by_id.insert(syspath, by_id_name.clone());
-                    by_id_name
+                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                    syspath_to_real_path.insert(syspath, real_path.clone());
+                    (real_path, by_id_name)
                 })
             })
             .collect();
-        for by_id_name in &startup_devices {
+        for (_, by_id_name) in &startup_devices {
             if !allowed_connected_devices.contains(by_id_name) {
                 allowed_connected_devices.push(by_id_name.clone());
             }
         }
-        for by_id_name in startup_devices {
+        for (real_path, by_id_name) in startup_devices {
             transfer_logic::spawn_transfer(
                 Arc::clone(&ui),
                 Arc::clone(&registry),
+                Arc::clone(&mount_manager),
                 source_media_entries.clone(),
                 storage_devices.clone(),
                 allowed_connected_devices.clone(),
                 transfer_logic::DetectedTransferInfo {
-                    source_media:  None,
-                    card_id:       None,
-                    source_device: None,
-                    device_location: Some(by_id_name),
+                    source_media:      None,
+                    card_id:           None,
+                    source_device:     None,
+                    device_location:   Some(by_id_name),
+                    real_device_path:  Some(real_path),
                 },
             );
         }
@@ -660,6 +670,7 @@ fn main() {
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {
+                    mount_manager.lock().unwrap().unmount_all_sync();
                     ui.lock().unwrap().quit().unwrap();
                     break 'outer;
                 }
@@ -667,15 +678,24 @@ fn main() {
                     transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
+                        Arc::clone(&mount_manager),
                         source_media_entries.clone(),
                         storage_devices.clone(),
                         allowed_connected_devices.clone(),
                         transfer_logic::DetectedTransferInfo {
-                            source_media:  None,
-                            card_id:       None,
-                            source_device: None,
-                            device_location: None,
+                            source_media:     None,
+                            card_id:          None,
+                            source_device:    None,
+                            device_location:  None,
+                            real_device_path: None,
                         },
+                    );
+                }
+                ui_api::UiToLogicMessage::UnmountRequest(mount_id) => {
+                    mount_manager::start_unmount(
+                        mount_id,
+                        Arc::clone(&mount_manager),
+                        Arc::clone(&ui),
                     );
                 }
             }
@@ -685,28 +705,39 @@ fn main() {
             let device = event.device();
             let syspath = device.syspath().to_string_lossy().into_owned();
             if device.action() == Some(OsStr::new("add")) {
-                if let Some(by_id_name) = device_by_id_name(&device, &allow_device_list, &ignore_device_list) {
+                if let Some((real_path, by_id_name)) = device_allowed_info(&device, &allow_device_list, &ignore_device_list) {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    syspath_to_by_id.insert(syspath, by_id_name.clone());
+                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                    syspath_to_real_path.insert(syspath, real_path.clone());
                     transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
+                        Arc::clone(&mount_manager),
                         source_media_entries.clone(),
                         storage_devices.clone(),
                         allowed_connected_devices.clone(),
                         transfer_logic::DetectedTransferInfo {
-                            source_media:  None,
-                            card_id:       None,
-                            source_device: None,
-                            device_location: Some(by_id_name),
+                            source_media:     None,
+                            card_id:          None,
+                            source_device:    None,
+                            device_location:  Some(by_id_name),
+                            real_device_path: Some(real_path),
                         },
                     );
                 }
             } else if device.action() == Some(OsStr::new("remove")) {
                 if let Some(by_id_name) = syspath_to_by_id.remove(&syspath) {
-                    // Only remove from the available list if no other connected device shares the same by-id name
+                    // Always remove mounts for this specific physical device
+                    if let Some(real_path) = syspath_to_real_path.remove(&syspath) {
+                        mount_manager::remove_mounts_for_device(
+                            &real_path,
+                            Arc::clone(&mount_manager),
+                            Arc::clone(&ui),
+                        );
+                    }
+                    // Only remove from the picker list when the last device with this by-id name is gone
                     if !syspath_to_by_id.values().any(|id| id == &by_id_name) {
                         allowed_connected_devices.retain(|id| id != &by_id_name);
                     }

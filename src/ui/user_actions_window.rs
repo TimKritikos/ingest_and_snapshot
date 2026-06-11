@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
     if minimise { return; }
 
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
-        "Exit",
+        "Unmount and exit",
         "Start manual transfer",
         "Finish backup and do snapshot",
     ])

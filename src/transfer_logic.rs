@@ -6,6 +6,7 @@ use crate::ui_api::{self, UiBackend};
 use crate::SourceMediaEntry;
 use crate::CardNamingScheme;
 use crate::transfer_registry::{PendingTransferRegistry, PendingCardId, TransferId};
+use crate::mount_manager::MountManager;
 
 /// Sentinel device location meaning "use the local filesystem directly, no block device required".
 /// This is always included as a picker option and skips the /dev/disk/by-id/ existence check.
@@ -16,25 +17,28 @@ pub struct DetectedTransferInfo {
     pub source_media: Option<SourceMediaEntry>, //TODO: this probably should be an Option<String>
     pub card_id: Option<String>,
     pub source_device: Option<String>,
-    pub device_location: Option<String>,
+    pub device_location: Option<String>,       // by-id name for display and allow/ignore checks
+    pub real_device_path: Option<PathBuf>,     // resolved device node for mounting (e.g. /dev/sdb1)
 }
 
 pub fn spawn_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
+    mount_manager: Arc<Mutex<MountManager>>,
     all_source_media: Vec<SourceMediaEntry>,
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
     all_device_locations: Vec<String>,
     detected: DetectedTransferInfo,
 ) {
     thread::spawn(move || {
-        run_transfer(ui, registry, all_source_media, all_storage_devices, all_device_locations, detected);
+        run_transfer(ui, registry, mount_manager, all_source_media, all_storage_devices, all_device_locations, detected);
     });
 }
 
 fn run_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
+    mount_manager: Arc<Mutex<MountManager>>,
     all_source_media: Vec<SourceMediaEntry>,
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
     all_device_locations: Vec<String>,
@@ -65,6 +69,9 @@ fn run_transfer(
     let auto_detected_device_location: Option<String> = detected.device_location.clone();
     let mut current_device_location: Option<String> = auto_detected_device_location.clone();
     let mut current_device_location_overridden: bool = false;
+
+    let auto_detected_real_device_path: Option<PathBuf> = detected.real_device_path.clone();
+    let mut current_real_device_path: Option<PathBuf> = auto_detected_real_device_path.clone();
 
     // Compute the initial card ID and register with the registry
     let mut current_card_id = match initial_card_id_and_register(
@@ -106,6 +113,13 @@ fn run_transfer(
 
     let mut is_re_approval = false; // becomes true after BackToQuery loops back
 
+    // True when a real block device location was detected at spawn time (i.e. a udev-triggered
+    // transfer).  In that case the approval dialog fields start frozen and are unfrozen once the
+    // device has been successfully mounted.
+    let needs_frozen_until_mount = auto_detected_device_location.as_deref()
+        .map(|loc| loc != LOCAL_FILESYSTEM_DEVICE_LOCATION)
+        .unwrap_or(false);
+
     'approval_loop: loop {
 
         // Create approve transfer window
@@ -114,19 +128,30 @@ fn run_transfer(
         let (update_tx, update_rx)     = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
 
         let show_priority = is_re_approval;
+        let initial_data = if !is_re_approval && needs_frozen_until_mount {
+            ui_api::ApproveTransferQueryUpdate {
+                source_media_dir: ui_api::TransferFieldState::Frozen,
+                source_device:    ui_api::TransferFieldState::Frozen,
+                data_size:        0,
+                card_id:          ui_api::TransferFieldState::Frozen,
+                device_location:  ui_api::TransferFieldState::AutoSelected(current_device_location.clone()),
+            }
+        } else {
+            query_update_from_state(
+                &current_source_media_dir,
+                &all_source_media,
+                &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
+                &current_card_id,
+                current_device_overridden,
+                current_storage_device_overridden,
+                card_id_manually_set,
+                &current_device_location,
+                current_device_location_overridden,
+            )
+        };
         if ui.lock().unwrap().user_query(
             ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
-                data: query_update_from_state(
-                          &current_source_media_dir,
-                          &all_source_media,
-                          &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
-                          &current_card_id,
-                          current_device_overridden,
-                          current_storage_device_overridden,
-                          card_id_manually_set,
-                          &current_device_location,
-                          current_device_location_overridden,
-                      ),
+                initial_data,
                 response_tx,
                 update_rx,
                 has_auto_detected_source_media: detected.source_media.is_some(),
@@ -142,6 +167,41 @@ fn run_transfer(
                     .expect("unregister: transfer must be registered before unregistering");
             }
             return;
+        }
+
+        // Mount the device on the first query submission (not on re-approval loops that only
+        // happen when the user goes back from a conflict dialog — location change events below
+        // already handle mounts triggered by the user picking a different location).
+        if !is_re_approval {
+            if let Some(ref location) = current_device_location {
+                if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
+                    if let Some(real_path) = current_real_device_path.clone() {
+                        // When fields started frozen, unfreeze them to AutoSelected(None) once the
+                        // filesystem is mounted so the user can see the dialog is ready for input.
+                        let on_mount_success: Option<Box<dyn FnOnce() + Send + 'static>> =
+                            if needs_frozen_until_mount {
+                                let tx = update_tx.clone();
+                                let known_location = current_device_location.clone();
+                                Some(Box::new(move || {
+                                    let _ = tx.send(ui_api::ApproveTransferQueryUpdate {
+                                        source_media_dir: ui_api::TransferFieldState::AutoSelected(None),
+                                        source_device:    ui_api::TransferFieldState::AutoSelected(None),
+                                        data_size:        0,
+                                        card_id:          ui_api::TransferFieldState::AutoSelected(None),
+                                        device_location:  ui_api::TransferFieldState::AutoSelected(known_location),
+                                    });
+                                }))
+                            } else {
+                                None
+                            };
+                        let _ = crate::mount_manager::start_mount(
+                            real_path, location.clone(), transfer_id,
+                            Arc::clone(&mount_manager), Arc::clone(&ui),
+                            on_mount_success,
+                        );
+                    }
+                }
+            }
         }
 
         // Wait for approval. Select simultaneously on the UI response channel and the
@@ -237,6 +297,20 @@ fn run_transfer(
                             ));
                         }
                         Ok(ui_api::ApproveTransferResponse::DeviceLocationChanged(location)) => {
+                            if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
+                                let by_id_path = PathBuf::from("/dev/disk/by-id").join(&location);
+                                let real_path = std::fs::canonicalize(&by_id_path).ok();
+                                current_real_device_path = real_path.clone();
+                                if let Some(real_path) = real_path {
+                                    let _ = crate::mount_manager::start_mount(
+                                        real_path, location.clone(), transfer_id,
+                                        Arc::clone(&mount_manager), Arc::clone(&ui),
+                                        None,
+                                    );
+                                }
+                            } else {
+                                current_real_device_path = None;
+                            }
                             current_device_location = Some(location);
                             current_device_location_overridden = true;
                             let _ = update_tx.send(query_update_from_state(
@@ -254,6 +328,18 @@ fn run_transfer(
                         Ok(ui_api::ApproveTransferResponse::DeviceLocationAuto) => {
                             current_device_location = auto_detected_device_location.clone();
                             current_device_location_overridden = false;
+                            current_real_device_path = auto_detected_real_device_path.clone();
+                            if let Some(ref location) = current_device_location {
+                                if location != LOCAL_FILESYSTEM_DEVICE_LOCATION {
+                                    if let Some(real_path) = current_real_device_path.clone() {
+                                        let _ = crate::mount_manager::start_mount(
+                                            real_path, location.clone(), transfer_id,
+                                            Arc::clone(&mount_manager), Arc::clone(&ui),
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
                                 &all_source_media,
@@ -545,6 +631,13 @@ fn run_transfer(
 
     // Step 5: Write the backup log entry
     // TODO
+
+    // Unmount all filesystems that were mounted for this transfer now that the transfer is done.
+    crate::mount_manager::start_unmount_for_transfer(
+        transfer_id,
+        Arc::clone(&mount_manager),
+        Arc::clone(&ui),
+    );
 }
 
 /// Determine the initial card ID and register the transfer with the registry.
@@ -758,16 +851,29 @@ fn query_update_from_state(
     device_location: &Option<String>,
     device_location_overridden: bool,
 ) -> ui_api::ApproveTransferQueryUpdate {
+    let source_media_dir_str = source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
     ui_api::ApproveTransferQueryUpdate {
-        source_media_dir: source_media_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
-        source_device: source_device.to_owned(),
+        source_media_dir: if device_overridden {
+            ui_api::TransferFieldState::Overridden(source_media_dir_str.unwrap_or_default())
+        } else {
+            ui_api::TransferFieldState::AutoSelected(source_media_dir_str)
+        },
+        source_device: if storage_device_overridden {
+            ui_api::TransferFieldState::Overridden(source_device.to_owned())
+        } else {
+            ui_api::TransferFieldState::AutoSelected(if source_device.is_empty() { None } else { Some(source_device.to_owned()) })
+        },
         data_size: 0,
-        card_id: card_id.to_owned(),
-        device_overridden,
-        storage_device_overridden,
-        card_id_overridden,
-        device_location: device_location.clone(),
-        device_location_overridden,
+        card_id: if card_id_overridden {
+            ui_api::TransferFieldState::Overridden(card_id.to_owned())
+        } else {
+            ui_api::TransferFieldState::AutoSelected(if card_id.is_empty() { None } else { Some(card_id.to_owned()) })
+        },
+        device_location: if device_location_overridden {
+            ui_api::TransferFieldState::Overridden(device_location.clone().unwrap_or_default())
+        } else {
+            ui_api::TransferFieldState::AutoSelected(device_location.clone())
+        },
     }
 }
 

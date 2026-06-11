@@ -9,7 +9,10 @@ use time_format::now;
 
 const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
 
-pub fn render(frame: &mut Frame, area: Rect, sys: &System, #[cfg(feature = "fps-counter")] fps: f64) {
+const MOUNT_WIDGET_BG: Color = Color::Rgb(220, 110, 0);
+const MOUNT_WIDGET_FG: Color = Color::Black;
+
+pub fn render(frame: &mut Frame, area: Rect, sys: &System, mount_count: usize, #[cfg(feature = "fps-counter")] fps: f64) {
     let current_time = now().unwrap();
     let timestamp = time_format::strftime_utc("%a, %d %b %Y %T %Z", current_time).unwrap();
 
@@ -37,16 +40,34 @@ pub fn render(frame: &mut Frame, area: Rect, sys: &System, #[cfg(feature = "fps-
         ]
     ).right_aligned();
 
-    // More layout setting
+    let mount_text = format!(" {} Filesystems [F] ", mount_count);
+    let mount_widget_width: u16 = mount_text.len().try_into().unwrap_or(30);
+
     let status_items = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![
             Constraint::Fill(1),
+            Constraint::Length(mount_widget_width),
             Constraint::Length(right_status.width().try_into().unwrap()),
         ])
         .split(area);
 
-    // Status bars
-    frame.render_widget(Paragraph::new(right_status).bg(Color::Black).add_modifier(Modifier::BOLD), status_items[1]);
-    frame.render_widget(Paragraph::new(format!(" {}", timestamp)).bg(Color::Black).fg(Color::White).add_modifier(Modifier::BOLD), status_items[0]);
+    frame.render_widget(
+        Paragraph::new(format!(" {}", timestamp))
+            .bg(Color::Black)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+        status_items[0],
+    );
+    frame.render_widget(
+        Paragraph::new(mount_text)
+            .bg(MOUNT_WIDGET_BG)
+            .fg(MOUNT_WIDGET_FG)
+            .add_modifier(Modifier::BOLD),
+        status_items[1],
+    );
+    frame.render_widget(
+        Paragraph::new(right_status).bg(Color::Black).add_modifier(Modifier::BOLD),
+        status_items[2],
+    );
 }

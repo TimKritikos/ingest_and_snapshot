@@ -26,6 +26,32 @@ pub struct TransferSample {
     pub bytes_done: u64,
 }
 
+/// Describes the state of a single field in a transfer approval dialog.
+/// Exactly one state is valid at a time, preventing conflicting flag combinations.
+pub enum TransferFieldState<T> {
+    /// The system automatically detected a value. `None` means detection ran but found nothing.
+    AutoSelected(Option<T>),
+    /// The user has manually set the field to this value.
+    Overridden(T),
+    /// The field is locked and cannot be changed (e.g. waiting for a block device to mount).
+    Frozen,
+}
+
+impl<T> TransferFieldState<T> {
+    /// Returns the current value if one is available, or `None` when the state is
+    /// `AutoSelected(None)` or `Frozen`.
+    pub fn value(&self) -> Option<&T> {
+        match self {
+            Self::AutoSelected(Some(v)) | Self::Overridden(v) => Some(v),
+            Self::AutoSelected(None) | Self::Frozen           => None,
+        }
+    }
+
+    pub fn is_overridden(&self) -> bool {
+        matches!(self, Self::Overridden(_))
+    }
+}
+
 pub enum TransferEvent {
     DeviceUnplugged,
     SourceMediaChanged(Option<String>),
@@ -69,19 +95,15 @@ pub enum ConfirmCardIdResponse {
 }
 
 pub struct ApproveTransferQueryUpdate {
-    pub source_media_dir: Option<String>,
-    pub source_device: String,
+    pub source_media_dir: TransferFieldState<String>,
+    pub source_device: TransferFieldState<String>,
     pub data_size: u64,
-    pub card_id: String,
-    pub device_overridden: bool,
-    pub storage_device_overridden: bool,
-    pub card_id_overridden: bool,
-    pub device_location: Option<String>,
-    pub device_location_overridden: bool,
+    pub card_id: TransferFieldState<String>,
+    pub device_location: TransferFieldState<String>,
 }
 
 pub struct ApproveTransferQuery {
-    pub data: ApproveTransferQueryUpdate,
+    pub initial_data: ApproveTransferQueryUpdate,
     pub response_tx: Sender<ApproveTransferResponse>,
     pub update_rx: Receiver<ApproveTransferQueryUpdate>,
     /// Whether an auto-detected source media exists for this transfer.
@@ -161,6 +183,7 @@ pub enum UserQuery {
 pub enum UiToLogicMessage {
     Quit,
     StartManualTransfer,
+    UnmountRequest(MountId),
 }
 
 /// Returned when a UiBackend method fails because the backend is no longer reachable.
@@ -169,12 +192,44 @@ pub enum UiError {
     Disconnected,
 }
 
+pub type MountId = u32;
+
+pub enum LoadingField<T> {
+    Loading,
+    Loaded(T),
+}
+
+pub enum MountEntryStatus {
+    Mounting,
+    Mounted,
+    Failed { reason: String },
+    UnmountFailed { reason: String },
+}
+
+pub struct MountEntry {
+    pub id: MountId,
+    pub by_id_name: String,
+    pub real_device_path: std::path::PathBuf,
+    pub mountpoint: std::path::PathBuf,
+    pub status: MountEntryStatus,
+    pub fs_type: LoadingField<String>,
+}
+
+pub enum MountUpdate {
+    MountAdded(MountEntry),
+    MountCompleted { id: MountId, fs_type: String },
+    MountFailed { id: MountId, reason: String },
+    MountRemoved { id: MountId },
+    UnmountFailed { id: MountId, reason: String },
+}
+
 /// The interface through which the main logic communicates with any UI backend.
 pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
     fn set_available_devices(&mut self, devices: Vec<crate::SourceMediaEntry>) -> Result<(), UiError>;
     fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
     fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError>;
+    fn mount_update(&mut self, update: MountUpdate) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().
     fn join(self: Box<Self>);

@@ -10,17 +10,20 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Block;
 use crossterm::event;
 use std::time::Duration;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode};
+use ratatui::layout::Rect;
 use crate::SourceMediaEntry;
 mod tui_dialog_widgets;
 mod status_bar;
 mod transfers_window;
 mod user_queries_window;
 mod user_actions_window;
+mod mount_list_overlay;
 
 use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
 use crate::ui_api::{
     TransferSample, TransferEvent, UserQuery, UiToLogicMessage, UiError,
+    MountEntry, MountEntryStatus, MountUpdate, LoadingField,
 };
 use crate::ui_api::UiBackend;
 
@@ -43,6 +46,7 @@ enum LogicToUiMessage {
     SetAvailableDevices(Vec<SourceMediaEntry>),
     NewTransfer { source_media_dir: Option<String>, rx_control: Receiver<TransferEvent> },
     UserQuery { query: UserQuery, priority: bool },
+    MountUpdate(MountUpdate),
     Quit,
 }
 
@@ -76,6 +80,9 @@ impl UiBackend for TuiBackend {
     fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::UserQuery { query, priority }).map_err(|_| UiError::Disconnected)
     }
+    fn mount_update(&mut self, update: crate::ui_api::MountUpdate) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::MountUpdate(update)).map_err(|_| UiError::Disconnected)
+    }
     fn quit(&mut self) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::Quit).map_err(|_| UiError::Disconnected)
     }
@@ -92,6 +99,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut available_devices: Option<Vec<SourceMediaEntry>> = None;
     let mut actions_state = ActionsWindowState::new();
     let mut query_state = user_queries_window::QueryWindowState::new();
+    let mut mounts: Vec<MountEntry> = Vec::new();
+    let mut mount_list_open = false;
+    let mut mount_list_state = mount_list_overlay::MountListState::new();
     #[cfg(feature = "fps-counter")]
     let mut frame_times: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     #[cfg(feature = "fps-counter")]
@@ -132,7 +142,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         //Update the data of the current transfer query if the main logic has sent anything new
         if let Some(UserQuery::ApproveTransfer(latest_query)) = query_queue.front_mut() {
             if let Ok(update) = latest_query.update_rx.try_recv() {
-                latest_query.data = update;
+                latest_query.initial_data = update;
             }
         }
 
@@ -149,7 +159,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         };
 
         terminal.draw(|frame| {
-            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref(), &sys,
+            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref(), &sys, &mounts, mount_list_open, &mount_list_state,
                 #[cfg(feature = "fps-counter")] fps,
             )
         })?;
@@ -183,11 +193,54 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                         query_queue.push_back(q);
                     }
                 }
+                LogicToUiMessage::MountUpdate(update) => {
+                    match update {
+                        MountUpdate::MountAdded(entry) => {
+                            mounts.push(entry);
+                        }
+                        MountUpdate::MountCompleted { id, fs_type } => {
+                            if let Some(entry) = mounts.iter_mut().find(|e| e.id == id) {
+                                entry.status = MountEntryStatus::Mounted;
+                                entry.fs_type = LoadingField::Loaded(fs_type);
+                            }
+                        }
+                        MountUpdate::MountFailed { id, reason } => {
+                            if let Some(entry) = mounts.iter_mut().find(|e| e.id == id) {
+                                entry.status = MountEntryStatus::Failed { reason };
+                            }
+                        }
+                        MountUpdate::MountRemoved { id } => {
+                            mounts.retain(|e| e.id != id);
+                            if !mounts.is_empty() && mount_list_state.selected >= mounts.len() {
+                                mount_list_state.selected = mounts.len() - 1;
+                            }
+                        }
+                        MountUpdate::UnmountFailed { id, reason } => {
+                            if let Some(entry) = mounts.iter_mut().find(|e| e.id == id) {
+                                entry.status = MountEntryStatus::UnmountFailed { reason };
+                            }
+                        }
+                    }
+                }
             }
         }
 
         if event::poll(Duration::from_millis(16))? && let Event::Key(key) = event::read()? {
-            if !query_queue.is_empty() {
+            // The mount list key is always intercepted first so the user can always open it.
+            if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) && !mount_list_open {
+                mount_list_open = true;
+                mount_list_state = mount_list_overlay::MountListState::new();
+            } else if mount_list_open {
+                match mount_list_overlay::handle_key(&mut mount_list_state, key, &mounts) {
+                    Some(mount_list_overlay::MountListEvent::Unmount(id)) => {
+                        tx.send(UiToLogicMessage::UnmountRequest(id)).unwrap();
+                    }
+                    Some(mount_list_overlay::MountListEvent::Close) => {
+                        mount_list_open = false;
+                    }
+                    None => {}
+                }
+            } else if !query_queue.is_empty() {
                 let prev_len = query_queue.len();
                 user_queries_window::handle_key(&mut query_state, key, &mut query_queue, available_devices.as_deref());
                 if query_queue.len() != prev_len {
@@ -239,7 +292,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>, sys: &System, #[cfg(feature = "fps-counter")] fps: f64) {
+fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>, sys: &System, mounts: &[MountEntry], mount_list_open: bool, mount_list_state: &mount_list_overlay::MountListState, #[cfg(feature = "fps-counter")] fps: f64) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -276,8 +329,8 @@ fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &V
         })
         .split(layout[1]);
 
-    // Status bars
-    status_bar::render(frame, layout[0], sys, #[cfg(feature = "fps-counter")] fps);
+    // Status bar
+    status_bar::render(frame, layout[0], sys, mounts.iter().count(), #[cfg(feature = "fps-counter")] fps);
 
     // Windows
     let mut window_index = 0;
@@ -291,4 +344,17 @@ fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &V
     }
 
     user_actions_window::render(frame, windows[window_index], actions_state, !show_user_queries, show_user_queries);
+
+    // Mount list overlay — rendered last so it appears on top of all other content.
+    if mount_list_open {
+        let max_overlay_height = frame.area().height.saturating_sub(1) / 2;
+        let overlay_height = mount_list_overlay::required_height(mounts, max_overlay_height.max(5));
+        let overlay_area = Rect {
+            x: 0,
+            y: 1, // just below the status bar
+            width: frame.area().width,
+            height: overlay_height,
+        };
+        mount_list_overlay::render(frame, overlay_area, mounts, mount_list_state);
+    }
 }

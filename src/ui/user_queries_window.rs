@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
@@ -37,10 +37,10 @@ impl QueryWindowState {
 }
 
 fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
-    data.source_media_dir.is_some()
-        && !data.card_id.is_empty()
-        && !data.source_device.is_empty()
-        && data.device_location.is_some()
+    data.source_media_dir.value().is_some()
+        && data.card_id.value().is_some_and(|id| !id.is_empty())
+        && data.source_device.value().is_some_and(|d| !d.is_empty())
+        && data.device_location.value().is_some()
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
@@ -130,9 +130,9 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                         state.device_location_picker_selection = 0;
                     }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
-                        state.card_id_entry = Some(TextEntryState::new(query.data.card_id.clone()));
+                        state.card_id_entry = Some(TextEntryState::new(query.initial_data.card_id.value().cloned().unwrap_or_default()));
                     }
-                    KeyCode::Enter if can_approve(&query.data) => {
+                    KeyCode::Enter if can_approve(&query.initial_data) => {
                         if let Some(UserQuery::ApproveTransfer(query)) = query_queue.pop_front() {
                             let _ = query.response_tx.send(ApproveTransferResponse::Approved);
                         }
@@ -277,9 +277,9 @@ pub fn render(
             } else if state.device_picker_open {
                 render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection, query.has_auto_detected_source_media);
             } else if state.storage_device_picker_open {
-                render_storage_device_picker(frame, &query.available_storage_devices, &query.data.source_device, query.data.storage_device_overridden, query.has_auto_detected_storage_device, state.storage_device_picker_selection);
+                render_storage_device_picker(frame, &query.available_storage_devices, query.initial_data.source_device.value().map(|s| s.as_str()).unwrap_or(""), query.initial_data.source_device.is_overridden(), query.has_auto_detected_storage_device, state.storage_device_picker_selection);
             } else if state.device_location_picker_open {
-                render_device_location_picker(frame, &query.available_device_locations, query.data.device_location.as_deref(), query.data.device_location_overridden, query.has_auto_detected_device_location, state.device_location_picker_selection);
+                render_device_location_picker(frame, &query.available_device_locations, query.initial_data.device_location.value().map(|s| s.as_str()), query.initial_data.device_location.is_overridden(), query.has_auto_detected_device_location, state.device_location_picker_selection);
             }
         }
         UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
@@ -327,7 +327,7 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     let ok_dim   = Style::default().fg(Color::DarkGray);
     let deny     = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
     let act      = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let (approve_key_style, approve_label_style) = if can_approve(&query.data) {
+    let (approve_key_style, approve_label_style) = if can_approve(&query.initial_data) {
         (ok, hint)
     } else {
         (ok_dim, ok_dim)
@@ -460,45 +460,92 @@ fn render_icon_placeholder(frame: &mut Frame, area: Rect) {
 }
 
 fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {
-    let label       = Style::default().fg(Color::Black);
-    let value       = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
-    let overwritten = Style::default().fg(Color::DarkGray);
-    let none_style  = Style::default().fg(Color::DarkGray);
+    let label_style  = Style::default().fg(Color::Black);
+    let value_style  = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let overwritten  = Style::default().fg(Color::DarkGray);
+    let none_style   = Style::default().fg(Color::DarkGray);
     let hint_style   = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
-    let data = &query.data;
+    let data = &query.initial_data;
     let size_str = super::format_bytes(data.data_size);
 
-    let source_media = data.source_media_dir.as_deref()
-        .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir));
-
-    let (device_name_str, device_values_style) = match source_media {
-        Some(e) => {
-            let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-            (
-                format!("{} {} (SN: {})", e.device_make_name, model,e.serial_number),
-                value,
-            )
+    // Builds a display Line for one transfer field. Rendering varies by state:
+    //   Frozen          → "Loading..."  in none_style   (placeholder until animated braille is added)
+    //   AutoSelected(None)  → "none"        in none_style
+    //   AutoSelected(Some)  → value text    in value_style
+    //   Overridden          → value text    in value_style + " (overridden)" in overwritten style
+    let field_line = |label: &str, hint: Option<&str>, field: &TransferFieldState<String>| -> Line<'static> {
+        let mut spans = vec![Span::styled(label.to_owned(), label_style)];
+        if let Some(h) = hint {
+            spans.push(Span::styled(h.to_owned(), hint_style));
         }
-        None => (  "none".to_owned(), none_style),
+        match field {
+            TransferFieldState::Frozen                  => spans.push(Span::styled("Loading...", none_style)),
+            TransferFieldState::AutoSelected(None)      => spans.push(Span::styled("none",       none_style)),
+            TransferFieldState::AutoSelected(Some(val)) => spans.push(Span::styled(val.clone(),  value_style)),
+            TransferFieldState::Overridden(val)         => {
+                spans.push(Span::styled(val.clone(),     value_style));
+                spans.push(Span::styled(" (overridden)", overwritten));
+            }
+        }
+        Line::from(spans)
     };
 
-    let (device_location_str, device_location_style) = match data.device_location.as_deref() {
-        Some(loc) if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION =>
-            ("Local filesystem".to_owned(), value),
-        Some(loc) => (loc.to_owned(), value),
-        None      => ("none".to_owned(), none_style),
+    // source_media_dir stores a directory path; resolve it to a human-readable device name for display.
+    let source_media_display: TransferFieldState<String> = match &data.source_media_dir {
+        TransferFieldState::Frozen => TransferFieldState::Frozen,
+        TransferFieldState::AutoSelected(dir_opt) => {
+            let display = dir_opt.as_deref()
+                .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
+                .map(|e| {
+                    let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
+                    format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
+                });
+            TransferFieldState::AutoSelected(display)
+        }
+        TransferFieldState::Overridden(dir) => {
+            let display = available_devices
+                .and_then(|devs| devs.iter().find(|e| e.directory.to_string_lossy() == dir.as_str()))
+                .map(|e| {
+                    let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
+                    format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
+                })
+                .unwrap_or_else(|| dir.clone());
+            TransferFieldState::Overridden(display)
+        }
+    };
+
+    // device_location stores a raw by-id name; translate the well-known sentinel to a readable label.
+    let device_location_display: TransferFieldState<String> = match &data.device_location {
+        TransferFieldState::Frozen => TransferFieldState::Frozen,
+        TransferFieldState::AutoSelected(loc_opt) => {
+            let display = loc_opt.as_deref().map(|loc| {
+                if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
+                    "Local filesystem".to_owned()
+                } else {
+                    loc.to_owned()
+                }
+            });
+            TransferFieldState::AutoSelected(display)
+        }
+        TransferFieldState::Overridden(loc) => {
+            let display = if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
+                "Local filesystem".to_owned()
+            } else {
+                loc.clone()
+            };
+            TransferFieldState::Overridden(display)
+        }
     };
 
     let lines: Vec<Line> = vec![
-        Line::from(vec![Span::styled("    Source media: ", label), Span::styled("[S] ", hint_style), Span::styled(device_name_str, device_values_style), Span::styled(
-            if data.device_overridden { " (overridden)" } else { "" }, overwritten)]),
-        Line::from(vec![Span::styled("         Card ID: ", label), Span::styled("[C] ", hint_style), Span::styled(data.card_id.as_str(), value), Span::styled(
-            if data.card_id_overridden { " (overridden)" } else { "" }, overwritten)]),
-        Line::from(vec![Span::styled("  Storage device: ", label), Span::styled("[D] ", hint_style), Span::styled(data.source_device.as_str(), value), Span::styled(
-            if data.storage_device_overridden { " (overridden)" } else { "" }, overwritten)]),
-        Line::from(vec![Span::styled(" Device location: ", label), Span::styled("[L] ", hint_style), Span::styled(device_location_str, device_location_style), Span::styled(
-            if data.device_location_overridden { " (overridden)" } else { "" }, overwritten)]),
-        Line::from(vec![Span::styled("  Transfer Size: ", label), Span::styled(size_str, value)]),
+        field_line("    Source media: ", Some("[S] "), &source_media_display),
+        field_line("         Card ID: ", Some("[C] "), &data.card_id),
+        field_line("  Storage device: ", Some("[D] "), &data.source_device),
+        field_line(" Device location: ", Some("[L] "), &device_location_display),
+        Line::from(vec![
+            Span::styled("  Transfer Size: ", label_style),
+            Span::styled(size_str,            value_style),
+        ]),
     ];
 
     frame.render_widget(Paragraph::new(lines), area);
