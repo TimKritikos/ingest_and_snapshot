@@ -791,7 +791,7 @@ fn run_transfer(
     // Confirm it is GNU coreutils before doing any further work, so we bail out early
     // instead of remounting and then moving with an implementation that may not
     // preserve timestamps.
-    if let Err(reason) = ensure_system_mv_is_gnu() {
+    if let Err(reason) = ensure_transfer_binary_is_gnu() {
         show_transfer_error(&ui, &transfer_event_tx, reason);
         return;
     }
@@ -1150,28 +1150,31 @@ fn create_card_directory(source_media_dir: &std::path::Path, card_id: &str) -> R
 /// Interval between transfer progress samples sent to the UI transfer graph.
 const TRANSFER_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The system `mv` binary used to move card data (see [`move_card_data`]).
-const SYSTEM_MV_BINARY: &str = "mv";
+/// The system binary used to transfer card data (see [`move_card_data`]).
+/// With the `copy-instead-of-move` feature this is `cp` (for debugging); otherwise `mv`.
+#[cfg(not(feature = "copy-instead-of-move"))]
+const TRANSFER_BINARY: &str = "mv";
+#[cfg(feature = "copy-instead-of-move")]
+const TRANSFER_BINARY: &str = "cp";
 
 /// Marker string present in `mv --version` output for GNU coreutils' implementation.
 const GNU_COREUTILS_VERSION_MARKER: &str = "GNU coreutils";
 
-/// Confirm that the system `mv` is GNU coreutils' implementation.
+/// Confirm that the system transfer binary (`mv` or `cp`) is GNU coreutils' implementation.
 ///
-/// The data move relies on GNU `mv` preserving access and modification timestamps when
-/// it falls back to copy-and-delete across filesystems (see [`move_card_data`]). Other
-/// implementations (e.g. busybox) make no such guarantee, so we refuse to run a transfer
-/// with them rather than silently lose the original timestamps.
-fn ensure_system_mv_is_gnu() -> Result<(), String> {
-    let version_output = std::process::Command::new(SYSTEM_MV_BINARY)
+/// Both `mv` and `cp` from GNU coreutils preserve access and modification timestamps;
+/// other implementations (e.g. busybox) make no such guarantee, so we refuse to run a
+/// transfer with them rather than silently lose the original timestamps.
+fn ensure_transfer_binary_is_gnu() -> Result<(), String> {
+    let version_output = std::process::Command::new(TRANSFER_BINARY)
         .arg("--version")
         .output()
-        .map_err(|e| format!("Could not run `{} --version`: {}", SYSTEM_MV_BINARY, e))?;
+        .map_err(|e| format!("Could not run `{} --version`: {}", TRANSFER_BINARY, e))?;
 
     if !version_output.status.success() {
         return Err(format!(
             "`{} --version` exited with a failure status; cannot confirm it is GNU coreutils",
-            SYSTEM_MV_BINARY,
+            TRANSFER_BINARY,
         ));
     }
 
@@ -1182,8 +1185,8 @@ fn ensure_system_mv_is_gnu() -> Result<(), String> {
         let reported_version = version_text.lines().next().unwrap_or("<no output>");
         Err(format!(
             "System `{}` is not GNU coreutils, so access/modification timestamps would not be \
-             preserved across a cross-filesystem move. `--version` reported: {}",
-            SYSTEM_MV_BINARY, reported_version,
+             preserved. `--version` reported: {}",
+            TRANSFER_BINARY, reported_version,
         ))
     }
 }
@@ -1283,14 +1286,19 @@ fn move_card_data(
         return Ok(());
     }
 
-    // GNU `mv` blocks until the whole move is done and offers no progress callback, so it
-    // runs on a worker thread while this thread samples the destination size. `-t` names
-    // the target directory and `--` stops option parsing so source paths beginning with a
-    // dash are never mistaken for flags.
+    // The transfer binary blocks until it is done and offers no progress callback, so it
+    // runs on a worker thread while this thread samples the destination size.
+    // `--target-directory` names the target directory and `--` stops option parsing so
+    // source paths beginning with a dash are never mistaken for flags.
+    // When copying, `--recursive` handles subdirectories and `--preserve=timestamps`
+    // keeps the original access and modification times.
     let (move_result_tx, move_result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
     let move_destination = destination_dir.to_owned();
     thread::spawn(move || {
-        let move_command_output = std::process::Command::new(SYSTEM_MV_BINARY)
+        let mut cmd = std::process::Command::new(TRANSFER_BINARY);
+        #[cfg(feature = "copy-instead-of-move")]
+        cmd.arg("--recursive").arg("--preserve=timestamps");
+        let move_command_output = cmd
             .arg("--target-directory")
             .arg(&move_destination)
             .arg("--")
@@ -1299,7 +1307,7 @@ fn move_card_data(
         let result = match move_command_output {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-            Err(spawn_error) => Err(format!("Could not run `{}`: {}", SYSTEM_MV_BINARY, spawn_error)),
+            Err(spawn_error) => Err(format!("Could not run `{}`: {}", TRANSFER_BINARY, spawn_error)),
         };
         let _ = move_result_tx.send(result);
     });
