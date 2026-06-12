@@ -40,9 +40,11 @@ pub fn spawn_transfer(
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
     all_device_locations: Vec<String>,
     detected: DetectedTransferInfo,
+    backup_log_manager: Arc<std::sync::Mutex<crate::backup_log::BackupLogManager>>,
+    media_dir: std::path::PathBuf,
 ) {
     thread::spawn(move || {
-        run_transfer(ui, registry, mount_manager, all_source_media, all_storage_devices, all_device_locations, detected);
+        run_transfer(ui, registry, mount_manager, all_source_media, all_storage_devices, all_device_locations, detected, backup_log_manager, media_dir);
     });
 }
 
@@ -54,6 +56,8 @@ fn run_transfer(
     all_storage_devices: Vec<crate::StorageDeviceEntry>,
     all_device_locations: Vec<String>,
     detected: DetectedTransferInfo,
+    backup_log_manager: Arc<std::sync::Mutex<crate::backup_log::BackupLogManager>>,
+    media_dir: std::path::PathBuf,
 ) {
     // "Local filesystem" is always a valid device location option regardless of connected hardware
     let all_device_locations = {
@@ -814,14 +818,34 @@ fn run_transfer(
     let source_media_dir = current_source_media_dir.clone()
         .expect("approval loop only completes with a source media dir selected");
     let destination_dir = source_media_dir.join("DATA").join(&current_card_id);
+
+    // Step 5: Register the transfer in the backup log now that the card directory exists.
+    let card_path_relative = destination_dir.strip_prefix(&media_dir)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| destination_dir.clone());
+    if let Err(e) = backup_log_manager.lock().unwrap().add_transfer(
+        card_path_relative.clone(),
+        current_source_device_id.clone(),
+    ) {
+        show_transfer_error(&ui, &transfer_event_tx, format!("Failed to update backup log: {}", e));
+        return;
+    }
+
+    let backup_log_for_samples = Arc::clone(&backup_log_manager);
+    let card_path_for_samples  = card_path_relative.clone();
+    let mut on_samples = move |samples: &[ui_api::TransferSample]| {
+        let log_samples: Vec<crate::backup_log::BackupLogSample> = samples.iter()
+            .map(|s| crate::backup_log::BackupLogSample { timestamp_ms: s.timestamp_ms, bytes_done: s.bytes_done })
+            .collect();
+        let _ = backup_log_for_samples.lock().unwrap()
+            .update_transfer_samples(&card_path_for_samples, log_samples);
+    };
+
     let move_result = resolve_source_data_dir(&input_path_state)
-        .and_then(|source_data_dir| move_card_data(&source_data_dir, &destination_dir, &transfer_event_tx));
+        .and_then(|source_data_dir| move_card_data(&source_data_dir, &destination_dir, &transfer_event_tx, &mut on_samples));
     if let Err(error_message) = move_result {
         show_transfer_error(&ui, &transfer_event_tx, error_message);
     }
-
-    // Step 5: Write the backup log entry
-    // TODO
 
     // Unmount all filesystems that were mounted for this transfer now that the transfer is done.
     crate::mount_manager::start_unmount_for_transfer(
@@ -1231,6 +1255,7 @@ fn move_card_data(
     source_path: &std::path::Path,
     destination_dir: &std::path::Path,
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
+    on_samples: &mut impl FnMut(&[ui_api::TransferSample]),
 ) -> Result<(), String> {
     // metadata() follows symlinks, so a symlink pointing at a directory is still treated
     // as a directory whose contents are moved.
@@ -1254,9 +1279,9 @@ fn move_card_data(
     let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total });
 
     if source_entries.is_empty() {
-        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
-            ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total },
-        ]));
+        let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total }];
+        on_samples(&samples);
+        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
         return Ok(());
     }
 
@@ -1286,9 +1311,9 @@ fn move_card_data(
             recv(move_result_rx) -> result => {
                 return match result {
                     Ok(Ok(())) => {
-                        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
-                            ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total },
-                        ]));
+                        let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total }];
+                        on_samples(&samples);
+                        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
                         Ok(())
                     }
                     Ok(Err(message)) => Err(format!("Failed to move data to {:?}: {}", destination_dir, message)),
@@ -1297,9 +1322,9 @@ fn move_card_data(
             }
             default(TRANSFER_SAMPLE_INTERVAL) => {
                 if let Ok(bytes_done) = directory_size_bytes(destination_dir) {
-                    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
-                        ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done },
-                    ]));
+                    let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done }];
+                    on_samples(&samples);
+                    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
                 }
             }
         }

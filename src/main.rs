@@ -41,6 +41,7 @@ mod ui_api;
 mod transfer_logic;
 mod transfer_registry;
 mod mount_manager;
+mod backup_log;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -54,10 +55,6 @@ const SOURCE_MEDIA_CONFIG_MIN_CAPABILITY_LEVEL: u32 = 1;
 const SOURCE_MEDIA_DATA_FILENAME: &str = "source_media_data.json";
 const EXPECTED_SOURCE_MEDIA_DATA_TYPE: &str = "source_media_config";
 
-const BACKUP_LOG_DATA_DIR_NAME: &str = "backup_log_data";
-const EXPECTED_BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
-const BACKUP_LOG_JSON_EXPECTED_MAJOR: u32 = 0;
-const BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
 
 #[derive(Deserialize, Serialize)]
 struct DataStructureVersion {
@@ -142,34 +139,6 @@ struct SourceMediaEntry {
     directory: PathBuf, // The directory from which this source media configuration was loaded.
 }
 
-// backup logs files
-
-#[derive(Deserialize)]
-struct BackupLogHeader {
-    data_type: String,
-    data_structure_version: DataStructureVersion,
-}
-
-#[derive(Deserialize)]
-struct BackupLogEntry {
-    previous_uuidv7: Option<String>,
-    current_uuidv7: String,
-    next_uuidv7: Option<String>,
-    comment: Option<String>,
-    completed_backup: bool,
-    new_transfers: Vec<BackupLogTransfer>,
-}
-
-#[derive(Deserialize)]
-struct BackupLogTransfer {
-    card_path: PathBuf,
-    medium_uuidv7: Option<String>,
-}
-
-enum BackupLogState {
-    UseExistingEntry(BackupLogEntry),
-    CreateNewEntry { previous_uuidv7: Option<String> },
-}
 
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
@@ -224,73 +193,6 @@ struct Cli {
     media_dir: Option<PathBuf>,
 }
 
-fn parse_backup_log_file(path: &PathBuf) -> Result<BackupLogEntry, String> {
-    let raw_json = std::fs::read_to_string(path)
-        .map_err(|e| format!("{}: failed to read: {}", path.display(), e))?;
-
-    let header = serde_json::from_str::<BackupLogHeader>(&raw_json)
-        .map_err(|e| format!("{}: failed to parse JSON: {}", path.display(), e))?;
-
-    if header.data_type != EXPECTED_BACKUP_LOG_DATA_TYPE {
-        return Err(format!("{}: unexpected data_type '{}' (expected '{}')",
-            path.display(), header.data_type, EXPECTED_BACKUP_LOG_DATA_TYPE));
-    }
-    if header.data_structure_version.major != BACKUP_LOG_JSON_EXPECTED_MAJOR {
-        return Err(format!(
-            "{}: unsupported data_structure_version: major {} is not supported (expected {})",
-            path.display(), header.data_structure_version.major, BACKUP_LOG_JSON_EXPECTED_MAJOR
-        ));
-    }
-    if header.data_structure_version.capability_level < BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL {
-        return Err(format!(
-            "{}: unsupported data_structure_version: capability_level {} is below minimum {}",
-            path.display(), header.data_structure_version.capability_level, BACKUP_LOG_JSON_MIN_CAPABILITY_LEVEL
-        ));
-    }
-
-    serde_json::from_str::<BackupLogEntry>(&raw_json)
-        .map_err(|e| format!("{}: failed to parse entry: {}", path.display(), e))
-}
-
-fn load_backup_log(media_dir: &PathBuf) -> Result<BackupLogState, String> {
-    let log_dir = media_dir.join("metadata").join(BACKUP_LOG_DATA_DIR_NAME);
-
-    if !log_dir.exists() {
-        return Err(format!("{}: directory not found", log_dir.display()));
-    }
-
-    let dir_entries = std::fs::read_dir(&log_dir)
-        .map_err(|e| format!("{}: failed to read directory: {}", log_dir.display(), e))?;
-
-    let mut filenames: Vec<String> = dir_entries
-        .map(|entry_result| {
-            entry_result
-                .map_err(|e| format!("Failed to read item in directory {}: {}", log_dir.display(), e))
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if filenames.is_empty() {
-        return Ok(BackupLogState::CreateNewEntry { previous_uuidv7: None });
-    }
-
-    filenames.sort();
-
-    let last_filename = filenames.last().unwrap();
-    let mut current_path = log_dir.join(last_filename);
-    let mut entry = parse_backup_log_file(&current_path)?;
-
-    while let Some(ref next_uuid) = entry.next_uuidv7.clone() {
-        current_path = log_dir.join(format!("{}.json", next_uuid));
-        entry = parse_backup_log_file(&current_path)?;
-    }
-
-    if entry.completed_backup {
-        Ok(BackupLogState::CreateNewEntry { previous_uuidv7: Some(entry.current_uuidv7) })
-    } else {
-        Ok(BackupLogState::UseExistingEntry(entry))
-    }
-}
 
 fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<String>), String> {
     let source_media_dir = media_dir.join(SOURCE_MEDIA_DIR_NAME);
@@ -580,7 +482,7 @@ fn main() {
 
     ui.lock().unwrap().set_available_devices(source_media_entries.clone()).unwrap();
 
-    let backup_log_state = match load_backup_log(&media_dir) {
+    let backup_log_state = match backup_log::load_backup_log(&media_dir) {
         Ok(state) => state,
         Err(msg) => {
             let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
@@ -594,9 +496,11 @@ fn main() {
             process::exit(1);
         }
     };
-    match backup_log_state {
-        BackupLogState::UseExistingEntry(entry) => {
-            for transfer in entry.new_transfers {
+
+    let backup_log_dir = media_dir.join("metadata").join(backup_log::BACKUP_LOG_DATA_DIR_NAME);
+    let backup_log_manager: Arc<Mutex<backup_log::BackupLogManager>> = match backup_log_state {
+        backup_log::BackupLogState::UseExistingEntry(entry) => {
+            for transfer in &entry.new_transfers {
                 let source_media_dir = source_media_entries
                     .iter()
                     .find(|sme| media_dir.join(&transfer.card_path).starts_with(&sme.directory))
@@ -604,14 +508,67 @@ fn main() {
 
                 let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                 ui.lock().unwrap().new_transfer(source_media_dir, transfer_event_rx).unwrap();
-                transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total: 1 }).unwrap();
-                transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(vec![
-                    ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 },
-                ])).unwrap();
+
+                let (bytes_total, ui_samples) = if transfer.transfer_samples.is_empty() {
+                    // No recorded samples — show as a completed placeholder so the UI
+                    // renders it as finished rather than stuck at zero progress.
+                    (1u64, vec![ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 }])
+                } else {
+                    let total = transfer.transfer_samples.last().unwrap().bytes_done;
+                    let samples = transfer.transfer_samples.iter()
+                        .map(|s| ui_api::TransferSample { timestamp_ms: s.timestamp_ms, bytes_done: s.bytes_done })
+                        .collect();
+                    (total, samples)
+                };
+                transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total }).unwrap();
+                transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(ui_samples)).unwrap();
+            }
+
+            let existing_transfers: Vec<(PathBuf, Option<String>, Vec<backup_log::BackupLogSample>)> =
+                entry.new_transfers.iter()
+                    .map(|t| (t.card_path.clone(), t.medium_uuidv7.clone(), t.transfer_samples.clone()))
+                    .collect();
+            let manager = backup_log::BackupLogManager::from_existing(
+                backup_log_dir,
+                entry.current_uuidv7,
+                entry.previous_uuidv7,
+                entry.comment,
+                existing_transfers,
+            );
+            Arc::new(Mutex::new(manager))
+        }
+        backup_log::BackupLogState::CreateNewEntry { previous_uuidv7 } => {
+            if previous_uuidv7.is_some() {
+                let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::NewBackupLogResponse>();
+                ui.lock().unwrap().user_query(
+                    ui_api::UserQuery::NewBackupLog(ui_api::NewBackupLogQuery { response_tx }),
+                    true,
+                ).unwrap();
+                match response_rx.recv() {
+                    Ok(ui_api::NewBackupLogResponse::CreateNew) => {}
+                    Ok(ui_api::NewBackupLogResponse::Quit) | Err(_) => {
+                        ui.lock().unwrap().quit().unwrap();
+                        if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
+                        process::exit(0);
+                    }
+                }
+            }
+            match backup_log::BackupLogManager::create_new(backup_log_dir, previous_uuidv7) {
+                Ok(manager) => Arc::new(Mutex::new(manager)),
+                Err(e) => {
+                    let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+                    ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                        error: ui_api::FatalErrorKind::BackupLog(format!("Failed to create backup log: {}", e)),
+                        response_tx,
+                    }), true).unwrap();
+                    let _ = response_rx.recv();
+                    ui.lock().unwrap().quit().unwrap();
+                    if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
+                    process::exit(1);
+                }
             }
         }
-        _ => {}
-    }
+    };
 
     let monitor = MonitorBuilder::new()
         .unwrap()
@@ -661,6 +618,8 @@ fn main() {
                     device_location:   Some(by_id_name),
                     real_device_path:  Some(real_path),
                 },
+                Arc::clone(&backup_log_manager),
+                media_dir.clone(),
             );
         }
     }
@@ -689,6 +648,8 @@ fn main() {
                             device_location:  None,
                             real_device_path: None,
                         },
+                        Arc::clone(&backup_log_manager),
+                        media_dir.clone(),
                     );
                 }
                 ui_api::UiToLogicMessage::UnmountRequest(mount_id) => {
@@ -725,6 +686,8 @@ fn main() {
                             device_location:  Some(by_id_name),
                             real_device_path: Some(real_path),
                         },
+                        Arc::clone(&backup_log_manager),
+                        media_dir.clone(),
                     );
                 }
             } else if device.action() == Some(OsStr::new("remove")) {

@@ -755,6 +755,7 @@ dependencies = [
  "tempfile",
  "time-format",
  "udev",
+ "uuid",
 ]
 
 [[package]]

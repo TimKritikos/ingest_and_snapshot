@@ -186,6 +186,15 @@ pub struct NoInputPathWarningQuery {
     pub response_tx: Sender<NoInputPathWarningResponse>,
 }
 
+pub struct NewBackupLogQuery {
+    pub response_tx: Sender<NewBackupLogResponse>,
+}
+
+pub enum NewBackupLogResponse {
+    CreateNew,
+    Quit,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     ScanNewDevice(ScanNewDeviceQuery),
@@ -196,6 +205,7 @@ pub enum UserQuery {
     NoSourceMediaWarning(NoSourceMediaWarningQuery),
     NoDeviceLocationWarning(NoDeviceLocationWarningQuery),
     NoInputPathWarning(NoInputPathWarningQuery),
+    NewBackupLog(NewBackupLogQuery),
 }
 
 /// Messages the UI sends back to the main logic.

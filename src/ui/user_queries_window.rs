@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
@@ -322,6 +322,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::NewBackupLog(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(UserQuery::NewBackupLog(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NewBackupLogResponse::CreateNew);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    if let Some(UserQuery::NewBackupLog(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(NewBackupLogResponse::Quit);
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -380,6 +395,7 @@ pub fn render(
         UserQuery::NoSourceMediaWarning(_) => render_no_source_media_warning(frame, padded),
         UserQuery::NoDeviceLocationWarning(query) => render_no_device_location_warning(frame, padded, &query.reason),
         UserQuery::NoInputPathWarning(_) => render_no_input_path_warning(frame, padded),
+        UserQuery::NewBackupLog(query) => render_new_backup_log(frame, padded, query),
     }
 }
 
@@ -1217,6 +1233,35 @@ fn render_no_input_path_warning(frame: &mut Frame, area: Rect) {
             Span::styled(" Back to query   ", hint),
             Span::styled("[Esc]", cancel),
             Span::styled(" Cancel transfer", hint),
+        ]),
+    ];
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
+}
+
+fn render_new_backup_log(frame: &mut Frame, area: Rect, _query: &NewBackupLogQuery) {
+    let warning = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let label   = Style::default().fg(Color::Black);
+    let hint    = Style::default().fg(Color::Black);
+    let ok      = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let quit    = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(vec![Span::styled("Previous backup log is complete", warning)]),
+        Line::from(""),
+        Line::from(vec![Span::styled("The last backup log entry is marked as complete.", label)]),
+        Line::from(vec![Span::styled("Start a new backup log entry to continue recording transfers?", label)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter]", ok),
+            Span::styled(" Create new log   ", hint),
+            Span::styled("[Esc]", quit),
+            Span::styled(" Quit", hint),
         ]),
     ];
     let content_height = lines.len() as u16;
