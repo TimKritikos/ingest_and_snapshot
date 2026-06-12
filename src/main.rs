@@ -65,10 +65,7 @@ struct DataStructureVersion {
 #[derive(Deserialize)]
 struct DeviceEntry {
     names: Vec<String>,
-    bought: Option<u64>,
     id: String,
-    exhaustive: bool,
-    manual_update: bool,
     device_type: Vec<String>,
 }
 

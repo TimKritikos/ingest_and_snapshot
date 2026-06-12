@@ -80,7 +80,6 @@ pub enum ApproveTransferResponse {
 pub struct ConfirmCardIdQuery {
     pub original_id: String,
     pub suggested_id: Option<String>, // The next sequential ID (UseNew option)
-    pub was_manually_set: bool,
     pub conflict_reason: CardIdConflictReason,
     pub response_tx: Sender<ConfirmCardIdResponse>,
 }

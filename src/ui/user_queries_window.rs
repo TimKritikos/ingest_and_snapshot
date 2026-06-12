@@ -381,7 +381,7 @@ pub fn render(
 
     match query {
         UserQuery::ApproveTransfer(query) => {
-            render_approve_transfer(frame, padded, query, state.device_override.as_ref(), available_devices);
+            render_approve_transfer(frame, padded, query, available_devices);
             if let Some(entry) = &state.card_id_entry {
                 tui_dialog_widgets::TextEntry {
                     title: "Set card ID",
@@ -409,7 +409,7 @@ pub fn render(
     }
 }
 
-fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, device_override: Option<&SourceMediaEntry>, available_devices: Option<&[SourceMediaEntry]>) {
+fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {
     let icon_cols = area.height * super::FONT_CELL_ASPECT_RATIO;
     let least_characters_for_text = 20 ; //TODO: I made this number up
 
@@ -444,7 +444,6 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     let ok       = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
     let ok_dim   = Style::default().fg(Color::DarkGray);
     let deny     = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let act      = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let (approve_key_style, approve_label_style) = if can_approve(&query.initial_data) {
         (ok, hint)
     } else {

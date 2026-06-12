@@ -13,7 +13,7 @@ pub enum PendingCardId {
     Auto(String),
     /// A manually set card ID. If it follows the CARD#### format, `scheme_number` holds
     /// the parsed number so it can influence auto-generation for other transfers.
-    Manual { id: String, scheme_number: Option<u32> },
+    Manual { scheme_number: Option<u32> },
 }
 
 

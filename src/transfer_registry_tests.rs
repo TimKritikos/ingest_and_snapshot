@@ -121,14 +121,13 @@ fn test_register_multiple_transfers_send_their_notification() {
     let dir = Path::new("/media/card");
     let rx = registry.subscribe(dir);
     let id1 = registry.new_transfer_internal_id();
-    let id2 = registry.new_transfer_internal_id();
     for i in 0..100 {
         registry.register(id1, dir, PendingCardId::Auto(format_card_id(i).unwrap()));
     }
-    for i in 0..100 {
+    for _ in 0..100 {
         assert!(rx.try_recv().is_ok());
     }
-    for i in 0..100 {
+    for _ in 0..100 {
         assert!(rx.try_recv().is_err());
     }
 }
@@ -446,7 +445,6 @@ fn test_next_card_id_skips_manual_reservation_at_base() {
     let manual_id   = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(manual_id, temp.path(), PendingCardId::Manual {
-        id: "CARD0004".to_string(),
         scheme_number: Some(4),
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0005");
@@ -465,11 +463,9 @@ fn test_next_card_id_skips_consecutive_manual_reservations() {
     let manual_id_b = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(manual_id_a, temp.path(), PendingCardId::Manual {
-        id: "CARD0004".to_string(),
         scheme_number: Some(4),
     });
     registry.register(manual_id_b, temp.path(), PendingCardId::Manual {
-        id: "CARD0005".to_string(),
         scheme_number: Some(5),
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0006");
@@ -487,7 +483,6 @@ fn test_next_card_id_manual_below_base_does_not_affect_result() {
     let manual_id   = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(manual_id, temp.path(), PendingCardId::Manual {
-        id: "CARD0002".to_string(),
         scheme_number: Some(2),
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
@@ -505,7 +500,6 @@ fn test_next_card_does_not_count_manual_transfers() {
     let manual_id   = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(manual_id, temp.path(), PendingCardId::Manual {
-        id: "CARD0006".to_string(),
         scheme_number: Some(6),
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
@@ -519,7 +513,6 @@ fn test_next_card_id_ignores_manual_without_scheme_number() {
     let other_id    = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(other_id, temp.path(), PendingCardId::Manual {
-        id: "some_freeform_id".to_string(),
         scheme_number: None,
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0000");

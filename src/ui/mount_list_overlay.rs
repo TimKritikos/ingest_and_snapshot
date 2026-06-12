@@ -89,7 +89,7 @@ pub fn render(frame: &mut Frame, area: Rect, mounts: &[MountEntry], state: &Moun
 
     // ── Title row ─────────────────────────────────────────────────────────────────
     let title_style = Style::default().fg(TITLE_FG).bg(OVERLAY_BG).add_modifier(Modifier::BOLD);
-    let title_text  = format!("    status    mount id   filesystem    Device      by-id");
+    let title_text  = format!("    status                    mountpoint                        filesystem      Device                  by-id");
     {
         let buf = frame.buffer_mut();
         buf.set_string(area.x, area.y + 2, &title_text, title_style);
@@ -175,7 +175,7 @@ fn render_entry_row(
     };
 
     let selector = if is_selected { "▶" } else { " " };
-    let id_text  = format!("{:08x}", entry.id);
+    let mountpoint_text  = format!("{: >45}",entry.mountpoint.display());
     let device_node_text = entry.real_device_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -192,10 +192,10 @@ fn render_entry_row(
         Span::styled("[",          row_style),
         Span::styled(badge_text,   badge_style),
         Span::styled("]  ",        row_style),
-        Span::styled(id_text,      row_style),
+        Span::styled(mountpoint_text,      row_style),
         Span::styled("  ",         row_style),
         Span::styled(format!("{: >11}", fs_text),           row_style),
-        Span::styled("    ",                                 row_style),
+        Span::styled("         ",                                 row_style),
         Span::styled(format!("{:<10}", device_node_text),   row_style),
         Span::styled("  ",                                   row_style),
         Span::styled(by_id_text,                             row_style),

@@ -342,25 +342,6 @@ fn do_unmount(mountpoint: &Path) -> Result<(), String> {
     result
 }
 
-/// Scans `/dev/disk/by-id/` to find all by-id names that resolve to `real_device_path`.
-/// Useful when only the real device node is known and the by-id name is needed for display.
-pub fn find_by_id_names_for_device(real_device_path: &Path) -> Vec<String> {
-    let by_id_dir = Path::new("/dev/disk/by-id");
-    let mut result = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(by_id_dir) {
-        for entry in entries.flatten() {
-            if let Ok(resolved) = std::fs::canonicalize(entry.path()) {
-                if resolved == real_device_path {
-                    if let Some(name) = entry.file_name().to_str() {
-                        result.push(name.to_owned());
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-
 /// Returns the mountpoint of the device at `real_device_path` if it is currently mounted.
 /// Returns `None` if the device is not tracked, still mounting, or failed to mount.
 pub fn get_mountpoint_for_real_device(

@@ -720,7 +720,6 @@ fn run_transfer(
                 ui_api::UserQuery::ConfirmCardId(ui_api::ConfirmCardIdQuery {
                     original_id: current_card_id.clone(),
                     suggested_id: final_suggested,
-                    was_manually_set: card_id_manually_set,
                     conflict_reason,
                     response_tx: conflict_tx,
                 }),
@@ -880,7 +879,7 @@ fn initial_card_id_and_register(
             } else {
                 None
             };
-            (manual_id.to_owned(), PendingCardId::Manual { id: manual_id.to_owned(), scheme_number })
+            (manual_id.to_owned(), PendingCardId::Manual { scheme_number })
         }
         _ => match scheme {
             CardNamingScheme::Card => {
@@ -890,7 +889,7 @@ fn initial_card_id_and_register(
             }
             CardNamingScheme::Freeform => {
                 // Empty until user provides it
-                (String::new(), PendingCardId::Manual { id: String::new(), scheme_number: None })
+                (String::new(), PendingCardId::Manual { scheme_number: None })
             }
         },
     };
@@ -936,7 +935,6 @@ fn handle_device_overwrite(
 
     let new_pending_card_id_data = if *card_id_manually_set {
         PendingCardId::Manual {
-            id: new_card_id.clone(),
             scheme_number: crate::transfer_registry::parse_card_number(&new_card_id),
         }
     } else {
@@ -1008,14 +1006,14 @@ fn handle_card_id_changed(
                     }
                     Err(e) => {
                         show_card_id_error(ui, None, format!("Failed to revert card ID to auto-generated: {}", e));
-                        (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+                        (new_id.clone(), PendingCardId::Manual { scheme_number: None }, true)
                     }
                 }
             } else {
-                (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+                (new_id.clone(), PendingCardId::Manual { scheme_number: None }, true)
             }
         } else {
-            (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number: None }, true)
+            (new_id.clone(), PendingCardId::Manual { scheme_number: None }, true)
         }
     } else {
         let scheme_number = source_dir
@@ -1026,7 +1024,7 @@ fn handle_card_id_changed(
                     None
                 }
             });
-        (new_id.clone(), PendingCardId::Manual { id: new_id.clone(), scheme_number }, true)
+        (new_id.clone(), PendingCardId::Manual { scheme_number }, true)
     };
 
     if let Some(dir) = source_dir {
