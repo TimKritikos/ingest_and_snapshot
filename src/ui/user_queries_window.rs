@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, ScanNewDeviceQuery, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
@@ -220,16 +220,26 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 }
             }
         }
-        Some(UserQuery::ScanNewDevice(_)) => {
+        Some(UserQuery::UnknownDevice(_)) => {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(UserQuery::ScanNewDevice(query)) = query_queue.pop_front() {
-                        let _ = query.response_tx.send(true);
+                KeyCode::Char('1') => {
+                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(UnknownDeviceResponse::AddToAllowList);
                     }
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    if let Some(UserQuery::ScanNewDevice(query)) = query_queue.pop_front() {
-                        let _ = query.response_tx.send(false);
+                KeyCode::Char('2') => {
+                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(UnknownDeviceResponse::AddToIgnoreList);
+                    }
+                }
+                KeyCode::Char('3') => {
+                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(UnknownDeviceResponse::AllowOnce);
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(UnknownDeviceResponse::Ignore);
                     }
                 }
                 _ => {}
@@ -388,7 +398,7 @@ pub fn render(
                 render_input_path_picker(frame, state);
             }
         }
-        UserQuery::ScanNewDevice(query) => render_scan_new_device(frame, padded, query),
+        UserQuery::UnknownDevice(query) => render_unknown_device(frame, padded, query),
         UserQuery::FatalError(query) => render_fatal_error(frame, padded, query),
         UserQuery::SourceMediaWarnings(query) => render_source_media_warnings(frame, padded, query),
         UserQuery::ConfirmCardId(query) => render_confirm_card_id(frame, padded, query),
@@ -1274,25 +1284,35 @@ fn render_new_backup_log(frame: &mut Frame, area: Rect, _query: &NewBackupLogQue
     frame.render_widget(Paragraph::new(lines), centered);
 }
 
-fn render_scan_new_device(frame: &mut Frame, area: Rect, query: &ScanNewDeviceQuery) {
-    let label = Style::default().fg(Color::Black);
-    let value = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
-    let hint  = Style::default().fg(Color::Black);
-    let ok    = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
-    let deny  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+fn render_unknown_device(frame: &mut Frame, area: Rect, query: &UnknownDeviceQuery) {
+    let label  = Style::default().fg(Color::Black);
+    let value  = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let hint   = Style::default().fg(Color::Black);
+    let key    = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let escape = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(vec![
             Span::styled("Unknown device: ", label),
             Span::styled(query.device_name.as_str(), value),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled("Scan this device?", hint)]),
+        Line::from(vec![Span::styled("What would you like to do?", hint)]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[Y]", ok),
-            Span::styled(" Yes   ", hint),
-            Span::styled("[N]", deny),
-            Span::styled(" No", hint),
+            Span::styled("[1]", key),
+            Span::styled(" Add to allow list  (saved to config)", hint),
+        ]),
+        Line::from(vec![
+            Span::styled("[2]", key),
+            Span::styled(" Add to ignore list (saved to config)", hint),
+        ]),
+        Line::from(vec![
+            Span::styled("[3]", key),
+            Span::styled(" Allow this session only", hint),
+        ]),
+        Line::from(vec![
+            Span::styled("[Esc]", escape),
+            Span::styled(" Skip", hint),
         ]),
     ];
     let content_height = lines.len() as u16;

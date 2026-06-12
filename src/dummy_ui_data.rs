@@ -251,9 +251,9 @@ pub fn run() -> ! {
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                     _ => return,
                 }
-                let (response_tx, response_rx) = crossbeam_channel::unbounded::<bool>();
-                ui_scan.lock().unwrap().user_query(ui_api::UserQuery::ScanNewDevice(ui_api::ScanNewDeviceQuery {
-                    device_name: "Unknown USB Camera".to_string(),
+                let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
+                ui_scan.lock().unwrap().user_query(ui_api::UserQuery::UnknownDevice(ui_api::UnknownDeviceQuery {
+                    device_name: "usb-Unknown_USB_Camera-0:0".to_string(),
                     response_tx,
                 }), false).unwrap();
                 let _ = response_rx.recv();

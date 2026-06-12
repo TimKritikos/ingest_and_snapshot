@@ -130,9 +130,16 @@ pub struct ApproveTransferQuery {
     pub available_device_locations: Vec<String>,
 }
 
-pub struct ScanNewDeviceQuery {
+pub struct UnknownDeviceQuery {
     pub device_name: String,
-    pub response_tx: Sender<bool>,
+    pub response_tx: Sender<UnknownDeviceResponse>,
+}
+
+pub enum UnknownDeviceResponse {
+    AddToAllowList,
+    AddToIgnoreList,
+    AllowOnce,
+    Ignore,
 }
 
 pub enum FatalErrorKind {
@@ -197,7 +204,7 @@ pub enum NewBackupLogResponse {
 
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
-    ScanNewDevice(ScanNewDeviceQuery),
+    UnknownDevice(UnknownDeviceQuery),
     FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
                                  //will be sent before any other message anyways so it doesn't matter
     SourceMediaWarnings(SourceMediaWarningsQuery),

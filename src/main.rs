@@ -18,7 +18,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::io;
 use std::io::Write;
 use std::process;
@@ -311,11 +311,18 @@ fn device_name_matches(by_id_name: &str, allow_entry: &str) -> bool {
     false
 }
 
-/// Returns `(real_device_path, by_id_name)` for a device if it is on the allow list
-/// and not on the ignore list. Returns `None` if the device should be skipped.
-/// `real_device_path` is the actual block device node (e.g. `/dev/sdb1`).
-/// `by_id_name` is the `/dev/disk/by-id/` entry name used for display and allow/ignore checks.
-fn device_allowed_info(device: &udev::Device, allow_list: &[String], ignore_list: &[String]) -> Option<(PathBuf, String)> {
+enum DeviceFilterResult {
+    Allowed { real_path: PathBuf, by_id_name: String },
+    Ignored,
+    Unknown { real_path: PathBuf, by_id_name: String },
+}
+
+/// Classifies a udev block device against the allow and ignore lists.
+///
+/// Returns `None` when the device has no `/dev/disk/by-id/` links or no device node,
+/// meaning it is not a relevant storage device at all.
+/// Otherwise returns `Allowed`, `Ignored`, or `Unknown`.
+fn device_filter(device: &udev::Device, allow_list: &[String], ignore_list: &[String]) -> Option<DeviceFilterResult> {
     let devlinks = device.property_value("DEVLINKS")?;
     let links = devlinks.to_string_lossy();
 
@@ -324,22 +331,51 @@ fn device_allowed_info(device: &udev::Device, allow_list: &[String], ignore_list
         .filter_map(|link| link.strip_prefix("/dev/disk/by-id/").map(str::to_owned))
         .collect();
 
+    if by_id_names.is_empty() {
+        return None;
+    }
+
     // Ignore list wins: if any by-id name matches an ignore entry, skip the device
     for name in &by_id_names {
         if ignore_list.iter().any(|entry| device_name_matches(name, entry)) {
-            return None;
+            return Some(DeviceFilterResult::Ignored);
         }
     }
 
-    // Return the first by-id name that matches an allow entry, plus the real device node path
+    // Check allow list
     for name in &by_id_names {
         if allow_list.iter().any(|entry| device_name_matches(name, entry)) {
-            let real_device_path = PathBuf::from(device.devnode()?);
-            return Some((real_device_path, name.clone()));
+            let real_path = PathBuf::from(device.devnode()?);
+            return Some(DeviceFilterResult::Allowed { real_path, by_id_name: name.clone() });
         }
     }
 
-    None
+    // Has by-id links but is on neither list: unknown device, requires user decision
+    let real_path = PathBuf::from(device.devnode()?);
+    let by_id_name = by_id_names.into_iter().next().unwrap();
+    Some(DeviceFilterResult::Unknown { real_path, by_id_name })
+}
+
+/// Atomically writes the config to disk by writing a temp file then renaming it over the target.
+/// This ensures the config file is never left in an invalid state even if the process is killed.
+fn write_config_atomically(
+    config_file_path: &Path,
+    data_type: &str,
+    data_structure_version: &str,
+    allow_device_list: &[String],
+    ignore_device_list: &[String],
+) -> anyhow::Result<()> {
+    let config = MainConfig {
+        data_type: data_type.to_string(),
+        data_structure_version: data_structure_version.to_string(),
+        allow_device_list: allow_device_list.to_vec(),
+        ignore_device_list: ignore_device_list.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&config)?;
+    let temp_path = config_file_path.with_extension("tmp");
+    std::fs::write(&temp_path, json.as_bytes())?;
+    std::fs::rename(&temp_path, config_file_path)?;
+    Ok(())
 }
 
 #[cfg_attr(feature = "dummy-ui-data", allow(unreachable_code))]
@@ -381,7 +417,7 @@ fn main() {
         process::exit(1);
     }
 
-    let config = parse_config_file(config_file_path).unwrap();
+    let config = parse_config_file(config_file_path.clone()).unwrap();
 
     let (ui_to_logic_tx, ui_to_logic_rx) = crossbeam_channel::unbounded::<ui_api::UiToLogicMessage>();
     let tui_backend = ui::TuiBackend::new(ui_to_logic_tx);
@@ -391,9 +427,14 @@ fn main() {
     let registry = Arc::new(Mutex::new(transfer_registry::PendingTransferRegistry::new()));
     let mount_manager = Arc::new(Mutex::new(mount_manager::MountManager::new()));
 
-    let allow_device_list = config.allow_device_list.clone();
-    let ignore_device_list = config.ignore_device_list.clone();
-    ui.lock().unwrap().add_config(config.allow_device_list, config.ignore_device_list).unwrap();
+    let config_data_type = config.data_type;
+    let config_data_structure_version = config.data_structure_version;
+    let mut allow_device_list: Vec<String> = config.allow_device_list;
+    let mut ignore_device_list: Vec<String> = config.ignore_device_list;
+    // Runtime allow list starts as a copy of the persisted list; session-only entries
+    // (AllowOnce) are added here but never written to the config file.
+    let mut runtime_allow_list: Vec<String> = allow_device_list.clone();
+    ui.lock().unwrap().add_config(allow_device_list.clone(), ignore_device_list.clone()).unwrap();
 
     let devices_config: DevicesConfig = {
         let devices_path = media_dir.join("metadata/devices.json");
@@ -588,22 +629,31 @@ fn main() {
     {
         let mut enumerator = Enumerator::new().unwrap();
         enumerator.match_subsystem("block").unwrap();
-        let startup_devices: Vec<(PathBuf, String)> = enumerator.scan_devices().unwrap()
-            .filter_map(|device| {
-                device_allowed_info(&device, &allow_device_list, &ignore_device_list).map(|(real_path, by_id_name)| {
-                    let syspath = device.syspath().to_string_lossy().into_owned();
-                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
-                    syspath_to_real_path.insert(syspath, real_path.clone());
-                    (real_path, by_id_name)
-                })
-            })
-            .collect();
-        for (_, by_id_name) in &startup_devices {
+
+        let mut startup_allowed: Vec<(PathBuf, String, String)> = Vec::new();
+        let mut startup_unknown: Vec<(PathBuf, String, String)> = Vec::new();
+
+        for device in enumerator.scan_devices().unwrap() {
+            let syspath = device.syspath().to_string_lossy().into_owned();
+            match device_filter(&device, &runtime_allow_list, &ignore_device_list) {
+                Some(DeviceFilterResult::Allowed { real_path, by_id_name }) => {
+                    startup_allowed.push((real_path, by_id_name, syspath));
+                }
+                Some(DeviceFilterResult::Unknown { real_path, by_id_name }) => {
+                    startup_unknown.push((real_path, by_id_name, syspath));
+                }
+                Some(DeviceFilterResult::Ignored) | None => {}
+            }
+        }
+
+        for (real_path, by_id_name, syspath) in &startup_allowed {
+            syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+            syspath_to_real_path.insert(syspath.clone(), real_path.clone());
             if !allowed_connected_devices.contains(by_id_name) {
                 allowed_connected_devices.push(by_id_name.clone());
             }
         }
-        for (real_path, by_id_name) in startup_devices {
+        for (real_path, by_id_name, _) in startup_allowed {
             transfer_logic::spawn_transfer(
                 Arc::clone(&ui),
                 Arc::clone(&registry),
@@ -621,6 +671,80 @@ fn main() {
                 Arc::clone(&backup_log_manager),
                 media_dir.clone(),
             );
+        }
+
+        for (real_path, by_id_name, syspath) in startup_unknown {
+            let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
+            ui.lock().unwrap().user_query(
+                ui_api::UserQuery::UnknownDevice(ui_api::UnknownDeviceQuery {
+                    device_name: by_id_name.clone(),
+                    response_tx,
+                }),
+                false,
+            ).unwrap();
+            match response_rx.recv().unwrap_or(ui_api::UnknownDeviceResponse::Ignore) {
+                ui_api::UnknownDeviceResponse::AddToAllowList => {
+                    allow_device_list.push(by_id_name.clone());
+                    runtime_allow_list.push(by_id_name.clone());
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                        eprintln!("Failed to persist config change: {}", e);
+                    }
+                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                    syspath_to_real_path.insert(syspath, real_path.clone());
+                    if !allowed_connected_devices.contains(&by_id_name) {
+                        allowed_connected_devices.push(by_id_name.clone());
+                    }
+                    transfer_logic::spawn_transfer(
+                        Arc::clone(&ui),
+                        Arc::clone(&registry),
+                        Arc::clone(&mount_manager),
+                        source_media_entries.clone(),
+                        storage_devices.clone(),
+                        allowed_connected_devices.clone(),
+                        transfer_logic::DetectedTransferInfo {
+                            source_media:     None,
+                            card_id:          None,
+                            source_device:    None,
+                            device_location:  Some(by_id_name),
+                            real_device_path: Some(real_path),
+                        },
+                        Arc::clone(&backup_log_manager),
+                        media_dir.clone(),
+                    );
+                }
+                ui_api::UnknownDeviceResponse::AddToIgnoreList => {
+                    ignore_device_list.push(by_id_name.clone());
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                        eprintln!("Failed to persist config change: {}", e);
+                    }
+                }
+                ui_api::UnknownDeviceResponse::AllowOnce => {
+                    runtime_allow_list.push(by_id_name.clone());
+                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                    syspath_to_real_path.insert(syspath, real_path.clone());
+                    if !allowed_connected_devices.contains(&by_id_name) {
+                        allowed_connected_devices.push(by_id_name.clone());
+                    }
+                    transfer_logic::spawn_transfer(
+                        Arc::clone(&ui),
+                        Arc::clone(&registry),
+                        Arc::clone(&mount_manager),
+                        source_media_entries.clone(),
+                        storage_devices.clone(),
+                        allowed_connected_devices.clone(),
+                        transfer_logic::DetectedTransferInfo {
+                            source_media:     None,
+                            card_id:          None,
+                            source_device:    None,
+                            device_location:  Some(by_id_name),
+                            real_device_path: Some(real_path),
+                        },
+                        Arc::clone(&backup_log_manager),
+                        media_dir.clone(),
+                    );
+                }
+                ui_api::UnknownDeviceResponse::Ignore => {}
+            }
         }
     }
 
@@ -666,29 +790,105 @@ fn main() {
             let device = event.device();
             let syspath = device.syspath().to_string_lossy().into_owned();
             if device.action() == Some(OsStr::new("add")) {
-                if let Some((real_path, by_id_name)) = device_allowed_info(&device, &allow_device_list, &ignore_device_list) {
-                    if !allowed_connected_devices.contains(&by_id_name) {
-                        allowed_connected_devices.push(by_id_name.clone());
+                match device_filter(&device, &runtime_allow_list, &ignore_device_list) {
+                    Some(DeviceFilterResult::Allowed { real_path, by_id_name }) => {
+                        if !allowed_connected_devices.contains(&by_id_name) {
+                            allowed_connected_devices.push(by_id_name.clone());
+                        }
+                        syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                        syspath_to_real_path.insert(syspath, real_path.clone());
+                        transfer_logic::spawn_transfer(
+                            Arc::clone(&ui),
+                            Arc::clone(&registry),
+                            Arc::clone(&mount_manager),
+                            source_media_entries.clone(),
+                            storage_devices.clone(),
+                            allowed_connected_devices.clone(),
+                            transfer_logic::DetectedTransferInfo {
+                                source_media:     None,
+                                card_id:          None,
+                                source_device:    None,
+                                device_location:  Some(by_id_name),
+                                real_device_path: Some(real_path),
+                            },
+                            Arc::clone(&backup_log_manager),
+                            media_dir.clone(),
+                        );
                     }
-                    syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
-                    syspath_to_real_path.insert(syspath, real_path.clone());
-                    transfer_logic::spawn_transfer(
-                        Arc::clone(&ui),
-                        Arc::clone(&registry),
-                        Arc::clone(&mount_manager),
-                        source_media_entries.clone(),
-                        storage_devices.clone(),
-                        allowed_connected_devices.clone(),
-                        transfer_logic::DetectedTransferInfo {
-                            source_media:     None,
-                            card_id:          None,
-                            source_device:    None,
-                            device_location:  Some(by_id_name),
-                            real_device_path: Some(real_path),
-                        },
-                        Arc::clone(&backup_log_manager),
-                        media_dir.clone(),
-                    );
+                    Some(DeviceFilterResult::Unknown { real_path, by_id_name }) => {
+                        let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
+                        ui.lock().unwrap().user_query(
+                            ui_api::UserQuery::UnknownDevice(ui_api::UnknownDeviceQuery {
+                                device_name: by_id_name.clone(),
+                                response_tx,
+                            }),
+                            false,
+                        ).unwrap();
+                        match response_rx.recv().unwrap_or(ui_api::UnknownDeviceResponse::Ignore) {
+                            ui_api::UnknownDeviceResponse::AddToAllowList => {
+                                allow_device_list.push(by_id_name.clone());
+                                runtime_allow_list.push(by_id_name.clone());
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                                    eprintln!("Failed to persist config change: {}", e);
+                                }
+                                syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                                syspath_to_real_path.insert(syspath, real_path.clone());
+                                if !allowed_connected_devices.contains(&by_id_name) {
+                                    allowed_connected_devices.push(by_id_name.clone());
+                                }
+                                transfer_logic::spawn_transfer(
+                                    Arc::clone(&ui),
+                                    Arc::clone(&registry),
+                                    Arc::clone(&mount_manager),
+                                    source_media_entries.clone(),
+                                    storage_devices.clone(),
+                                    allowed_connected_devices.clone(),
+                                    transfer_logic::DetectedTransferInfo {
+                                        source_media:     None,
+                                        card_id:          None,
+                                        source_device:    None,
+                                        device_location:  Some(by_id_name),
+                                        real_device_path: Some(real_path),
+                                    },
+                                    Arc::clone(&backup_log_manager),
+                                    media_dir.clone(),
+                                );
+                            }
+                            ui_api::UnknownDeviceResponse::AddToIgnoreList => {
+                                ignore_device_list.push(by_id_name.clone());
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                                    eprintln!("Failed to persist config change: {}", e);
+                                }
+                            }
+                            ui_api::UnknownDeviceResponse::AllowOnce => {
+                                runtime_allow_list.push(by_id_name.clone());
+                                syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
+                                syspath_to_real_path.insert(syspath, real_path.clone());
+                                if !allowed_connected_devices.contains(&by_id_name) {
+                                    allowed_connected_devices.push(by_id_name.clone());
+                                }
+                                transfer_logic::spawn_transfer(
+                                    Arc::clone(&ui),
+                                    Arc::clone(&registry),
+                                    Arc::clone(&mount_manager),
+                                    source_media_entries.clone(),
+                                    storage_devices.clone(),
+                                    allowed_connected_devices.clone(),
+                                    transfer_logic::DetectedTransferInfo {
+                                        source_media:     None,
+                                        card_id:          None,
+                                        source_device:    None,
+                                        device_location:  Some(by_id_name),
+                                        real_device_path: Some(real_path),
+                                    },
+                                    Arc::clone(&backup_log_manager),
+                                    media_dir.clone(),
+                                );
+                            }
+                            ui_api::UnknownDeviceResponse::Ignore => {}
+                        }
+                    }
+                    Some(DeviceFilterResult::Ignored) | None => {}
                 }
             } else if device.action() == Some(OsStr::new("remove")) {
                 if let Some(by_id_name) = syspath_to_by_id.remove(&syspath) {
