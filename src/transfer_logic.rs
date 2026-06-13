@@ -861,7 +861,15 @@ fn run_transfer(
         .unwrap_or_else(|_| destination_dir.clone());
     if let Err(e) = backup_log_manager.lock().unwrap().add_transfer(
         card_path_relative.clone(),
+        current_card_id.clone(),
+        current_device_overridden,
+        card_id_manually_set,
         current_source_device_id.clone(),
+        current_storage_device_overridden,
+        current_device_location.clone(),
+        current_device_location_overridden,
+        input_path_state.virtual_path.clone(),
+        input_path_state.is_overridden,
     ) {
         show_transfer_error(&ui, &transfer_event_tx, format!("Failed to update backup log: {}", e));
         return;

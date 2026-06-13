@@ -42,7 +42,15 @@ pub struct BackupLogSample {
 #[derive(Serialize, Clone)]
 struct BackupLogTransferWritable {
     card_path: PathBuf,
+    card_id: String,
+    source_media_overridden: bool,
+    card_id_overridden: bool,
     medium_uuidv7: Option<String>,
+    medium_uuidv7_overridden: bool,
+    device_location: Option<String>,
+    device_location_overridden: bool,
+    input_path: Option<PathBuf>,
+    input_path_overridden: bool,
     transfer_samples: Vec<BackupLogSample>,
     transfer_performed_by: Option<String>,
 }
@@ -78,7 +86,21 @@ pub struct BackupLogEntry {
 #[derive(Deserialize)]
 pub struct BackupLogTransfer {
     pub card_path: PathBuf,
+    #[serde(default)]
+    pub card_id: String,
+    #[serde(default)]
+    pub source_media_overridden: bool,
+    #[serde(default)]
+    pub card_id_overridden: bool,
     pub medium_uuidv7: Option<String>,
+    #[serde(default)]
+    pub medium_uuidv7_overridden: bool,
+    pub device_location: Option<String>,
+    #[serde(default)]
+    pub device_location_overridden: bool,
+    pub input_path: Option<PathBuf>,
+    #[serde(default)]
+    pub input_path_overridden: bool,
     #[serde(default)]
     pub transfer_samples: Vec<BackupLogSample>,
     pub transfer_performed_by: Option<String>,
@@ -128,7 +150,7 @@ impl BackupLogManager {
         current_uuidv7: String,
         previous_uuidv7: Option<String>,
         comment: Option<String>,
-        existing_transfers: Vec<(PathBuf, Option<String>, Vec<BackupLogSample>, Option<String>)>,
+        existing_transfers: Vec<BackupLogTransfer>,
     ) -> Self {
         let entry = BackupLogEntryWritable {
             data_type: BACKUP_LOG_DATA_TYPE.to_owned(),
@@ -141,20 +163,53 @@ impl BackupLogManager {
             next_uuidv7: None,
             comment,
             completed_backup: false,
-            new_transfers: existing_transfers.into_iter().map(|(card_path, medium_uuidv7, samples, transfer_performed_by)| {
-                BackupLogTransferWritable { card_path, medium_uuidv7, transfer_samples: samples , transfer_performed_by}
+            new_transfers: existing_transfers.into_iter().map(|t| {
+                BackupLogTransferWritable {
+                    card_path:                  t.card_path,
+                    card_id:                    t.card_id,
+                    source_media_overridden:    t.source_media_overridden,
+                    card_id_overridden:         t.card_id_overridden,
+                    medium_uuidv7:              t.medium_uuidv7,
+                    medium_uuidv7_overridden:   t.medium_uuidv7_overridden,
+                    device_location:            t.device_location,
+                    device_location_overridden: t.device_location_overridden,
+                    input_path:                 t.input_path,
+                    input_path_overridden:      t.input_path_overridden,
+                    transfer_samples:           t.transfer_samples,
+                    transfer_performed_by:      t.transfer_performed_by,
+                }
             }).collect(),
         };
         BackupLogManager { log_dir, entry }
     }
 
     /// Appends a new transfer record and flushes to disk atomically.
-    pub fn add_transfer(&mut self, card_path: PathBuf, medium_uuidv7: Option<String>) -> Result<(), String> {
+    pub fn add_transfer(
+        &mut self,
+        card_path: PathBuf,
+        card_id: String,
+        source_media_overridden: bool,
+        card_id_overridden: bool,
+        medium_uuidv7: Option<String>,
+        medium_uuidv7_overridden: bool,
+        device_location: Option<String>,
+        device_location_overridden: bool,
+        input_path: Option<PathBuf>,
+        input_path_overridden: bool,
+    ) -> Result<(), String> {
         self.entry.new_transfers.push(BackupLogTransferWritable {
             card_path,
+            card_id,
+            source_media_overridden,
+            card_id_overridden,
             medium_uuidv7,
+            medium_uuidv7_overridden,
+            device_location,
+            device_location_overridden,
+            input_path,
+            input_path_overridden,
             transfer_samples: Vec::new(),
-            transfer_performed_by: Some(format!("ingest_and_snapshot {}",env!("CARGO_PKG_VERSION"))),
+            transfer_performed_by: Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
         });
         self.flush()
     }

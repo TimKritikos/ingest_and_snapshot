@@ -58,7 +58,7 @@ mod tests {
         let mut log_manager = BackupLogManager::create_new(backup_log_dir, None).unwrap();
         log_manager.add_transfer(
             std::path::PathBuf::from("source_media/test_cam/DATA/CARD0000"),
-            None,
+            false, false, None, false, None, false, None, false,
         ).unwrap();
         let backup_log_manager = Arc::new(Mutex::new(log_manager));
 

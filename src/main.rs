@@ -562,16 +562,12 @@ fn main() {
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(ui_samples)).unwrap();
             }
 
-            let existing_transfers: Vec<(PathBuf, Option<String>, Vec<backup_log::BackupLogSample>, Option<String>)> =
-                entry.new_transfers.iter()
-                    .map(|t| (t.card_path.clone(), t.medium_uuidv7.clone(), t.transfer_samples.clone(), t.transfer_performed_by.clone()))
-                    .collect();
             let manager = backup_log::BackupLogManager::from_existing(
                 backup_log_dir,
                 entry.current_uuidv7,
                 entry.previous_uuidv7,
                 entry.comment,
-                existing_transfers,
+                entry.new_transfers,
             );
             Arc::new(Mutex::new(manager))
         }
