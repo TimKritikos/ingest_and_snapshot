@@ -44,6 +44,7 @@ struct BackupLogTransferWritable {
     card_path: PathBuf,
     medium_uuidv7: Option<String>,
     transfer_samples: Vec<BackupLogSample>,
+    transfer_performed_by: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -56,6 +57,31 @@ struct BackupLogEntryWritable {
     comment: Option<String>,
     completed_backup: bool,
     new_transfers: Vec<BackupLogTransferWritable>,
+}
+
+#[derive(Deserialize)]
+struct BackupLogHeader {
+    data_type: String,
+    data_structure_version: BackupLogStructureVersion,
+}
+
+#[derive(Deserialize)]
+pub struct BackupLogEntry {
+    pub previous_uuidv7: Option<String>,
+    pub current_uuidv7: String,
+    pub next_uuidv7: Option<String>,
+    pub comment: Option<String>,
+    pub completed_backup: bool,
+    pub new_transfers: Vec<BackupLogTransfer>,
+}
+
+#[derive(Deserialize)]
+pub struct BackupLogTransfer {
+    pub card_path: PathBuf,
+    pub medium_uuidv7: Option<String>,
+    #[serde(default)]
+    pub transfer_samples: Vec<BackupLogSample>,
+    pub transfer_performed_by: Option<String>,
 }
 
 /// Thread-safe writer for a single backup log entry.
@@ -102,7 +128,7 @@ impl BackupLogManager {
         current_uuidv7: String,
         previous_uuidv7: Option<String>,
         comment: Option<String>,
-        existing_transfers: Vec<(PathBuf, Option<String>, Vec<BackupLogSample>)>,
+        existing_transfers: Vec<(PathBuf, Option<String>, Vec<BackupLogSample>, Option<String>)>,
     ) -> Self {
         let entry = BackupLogEntryWritable {
             data_type: BACKUP_LOG_DATA_TYPE.to_owned(),
@@ -115,8 +141,8 @@ impl BackupLogManager {
             next_uuidv7: None,
             comment,
             completed_backup: false,
-            new_transfers: existing_transfers.into_iter().map(|(card_path, medium_uuidv7, samples)| {
-                BackupLogTransferWritable { card_path, medium_uuidv7, transfer_samples: samples }
+            new_transfers: existing_transfers.into_iter().map(|(card_path, medium_uuidv7, samples, transfer_performed_by)| {
+                BackupLogTransferWritable { card_path, medium_uuidv7, transfer_samples: samples , transfer_performed_by}
             }).collect(),
         };
         BackupLogManager { log_dir, entry }
@@ -128,6 +154,7 @@ impl BackupLogManager {
             card_path,
             medium_uuidv7,
             transfer_samples: Vec::new(),
+            transfer_performed_by: Some(format!("ingest_and_snapshot {}",env!("CARGO_PKG_VERSION"))),
         });
         self.flush()
     }
@@ -159,29 +186,6 @@ impl BackupLogManager {
     }
 }
 
-#[derive(Deserialize)]
-struct BackupLogHeader {
-    data_type: String,
-    data_structure_version: BackupLogStructureVersion,
-}
-
-#[derive(Deserialize)]
-pub struct BackupLogEntry {
-    pub previous_uuidv7: Option<String>,
-    pub current_uuidv7: String,
-    pub next_uuidv7: Option<String>,
-    pub comment: Option<String>,
-    pub completed_backup: bool,
-    pub new_transfers: Vec<BackupLogTransfer>,
-}
-
-#[derive(Deserialize)]
-pub struct BackupLogTransfer {
-    pub card_path: PathBuf,
-    pub medium_uuidv7: Option<String>,
-    #[serde(default)]
-    pub transfer_samples: Vec<BackupLogSample>,
-}
 
 pub enum BackupLogState {
     UseExistingEntry(BackupLogEntry),
