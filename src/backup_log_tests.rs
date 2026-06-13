@@ -108,6 +108,9 @@ mod tests {
                     BackupLogSample { timestamp_ms: 2000, bytes_done: 2048 },
                 ]),
                 transfer_performed_by:      Some("ingest_and_snapshot 0.1.0".to_owned()),
+                bytes_total_measured:       Some(2048),
+                transfer_failed:            Some(true),
+                failure_message:            Some("test failure".to_owned()),
             }],
         }
     }

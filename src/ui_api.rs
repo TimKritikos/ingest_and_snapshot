@@ -58,6 +58,7 @@ pub enum TransferEvent {
     SourceMediaChanged(Option<String>),
     TransferStarted { bytes_total: u64 },
     TransferSamples(Vec<TransferSample>),
+    TransferFailed,
 }
 
 pub enum SourceMediaSelection {

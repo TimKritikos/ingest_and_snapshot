@@ -31,6 +31,7 @@ enum TransferStatus {
     NotStarted,
     InProgress,
     Finished,
+    Failed,
 }
 
 struct Transfer {
@@ -129,6 +130,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                                 transfers[i].status = TransferStatus::Finished;
                             }
                         }
+                    }
+                    TransferEvent::TransferFailed => {
+                        transfers[i].status = TransferStatus::Failed;
                     }
                 }
             }

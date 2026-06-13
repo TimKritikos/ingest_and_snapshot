@@ -27,6 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer], available_d
     let in_progress = transfers.iter().filter(|t| matches!(t.status, TransferStatus::InProgress)).count();
     let finished    = transfers.iter().filter(|t| matches!(t.status, TransferStatus::Finished)).count();
     let waiting     = transfers.iter().filter(|t| matches!(t.status, TransferStatus::NotStarted)).count();
+    let failed      = transfers.iter().filter(|t| matches!(t.status, TransferStatus::Failed)).count();
 
     let title = if transfers.is_empty() {
         "Transfers".to_string()
@@ -35,6 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer], available_d
         if in_progress > 0 { parts.push(format!("{} in progress", in_progress)); }
         if waiting > 0     { parts.push(format!("{} waiting",     waiting));     }
         if finished > 0    { parts.push(format!("{} finished",    finished));    }
+        if failed > 0      { parts.push(format!("{} failed",      failed));      }
         format!("Transfers — {}", parts.join("  |  "))
     };
 
@@ -54,9 +56,10 @@ pub fn render(frame: &mut Frame, area: Rect, transfers: &[Transfer], available_d
 
     let mut transfers_sorted: Vec<&Transfer> = transfers.iter().collect();
     transfers_sorted.sort_by_key(|t| match t.status {
-        TransferStatus::InProgress => 0,
-        TransferStatus::NotStarted => 1,
-        TransferStatus::Finished   => 2,
+        TransferStatus::InProgress    => 0,
+        TransferStatus::NotStarted    => 1,
+        TransferStatus::Finished      => 2,
+        TransferStatus::Failed => 3,
     });
 
     for (i, transfer) in transfers_sorted.iter().enumerate() {
@@ -85,9 +88,10 @@ impl Widget for TransferItem<'_> {
 
         //Create title
         let (badge_inner, badge_fg) = match self.transfer.status {
-            TransferStatus::NotStarted => ("not-started", Color::Yellow),
-            TransferStatus::InProgress => ("  running  ", Color::Green),
-            TransferStatus::Finished   => ("   done    ", Color::LightBlue),
+            TransferStatus::NotStarted    => ("not-started", Color::Yellow),
+            TransferStatus::InProgress    => ("  running  ", Color::Green),
+            TransferStatus::Finished      => ("   done    ", Color::LightBlue),
+            TransferStatus::Failed => ("  failed   ", Color::Red),
         };
 
         let bracket_style = Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD);
@@ -182,7 +186,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
 
 
     let progress_dot_width = match status {
-        TransferStatus::Finished | TransferStatus::InProgress => {
+        TransferStatus::Finished | TransferStatus::InProgress | TransferStatus::Failed => {
             if bytes_total > 0 {
                 ((bytes_done as u128 * total_braille_cols as u128 / bytes_total as u128) as usize)
                     .min(total_braille_cols)
@@ -284,9 +288,10 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
     }
 
     let bar_fg = match status {
-        TransferStatus::Finished   => Color::LightBlue,
-        TransferStatus::InProgress => Color::Green,
-        TransferStatus::NotStarted => Color::Yellow,
+        TransferStatus::Finished      => Color::LightBlue,
+        TransferStatus::InProgress    => Color::Green,
+        TransferStatus::NotStarted    => Color::Yellow,
+        TransferStatus::Failed => Color::Red,
     };
 
     for row in 0..height {

@@ -885,10 +885,22 @@ fn run_transfer(
             .update_transfer_samples(&card_path_for_samples, log_samples);
     };
 
-    let move_result = resolve_source_data_dir(&input_path_state)
-        .and_then(|source_data_dir| move_card_data(&source_data_dir, &destination_dir, &transfer_event_tx, &mut on_samples));
-    if let Err(error_message) = move_result {
-        show_transfer_error(&ui, &transfer_event_tx, error_message);
+    let (bytes_total_source, move_outcome) = match resolve_source_data_dir(&input_path_state) {
+        Ok(source_data_dir) => move_card_data(&source_data_dir, &destination_dir, &transfer_event_tx, &mut on_samples),
+        Err(e) => (0, Err(e)),
+    };
+
+    match move_outcome {
+        Ok(()) => {
+            // bytes_total_source is the authoritative transfer size (source measurement before binary ran).
+            let _ = backup_log_manager.lock().unwrap()
+                .finalize_transfer(&card_path_relative, bytes_total_source, false, None);
+        }
+        Err(error_message) => {
+            let _ = backup_log_manager.lock().unwrap()
+                .finalize_transfer(&card_path_relative, bytes_total_source, true, Some(error_message.clone()));
+            show_transfer_error(&ui, &transfer_event_tx, error_message);
+        }
     }
 
     // Unmount all filesystems that were mounted for this transfer now that the transfer is done.
@@ -1297,26 +1309,40 @@ fn directory_size_bytes(dir: &std::path::Path) -> std::io::Result<u64> {
 ///
 /// The change timestamp (ctime) is intentionally not preserved: Linux offers no way
 /// to set it, as the kernel updates it on every inode modification.
+/// Returns `(bytes_total_source, outcome)` where `bytes_total_source` is the size of the source
+/// data measured before the binary ran, and `outcome` is `Ok(())` on success or `Err` on failure.
+/// The caller is responsible for recording `bytes_total_source` in the backup log as the
+/// authoritative transfer size and for sending the post-exit destination sample on failure.
 fn move_card_data(
     source_path: &std::path::Path,
     destination_dir: &std::path::Path,
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
     on_samples: &mut impl FnMut(&[ui_api::TransferSample]),
-) -> Result<(), String> {
+) -> (u64, Result<(), String>) {
     // metadata() follows symlinks, so a symlink pointing at a directory is still treated
     // as a directory whose contents are moved.
-    let source_metadata = std::fs::metadata(source_path)
-        .map_err(|e| format!("Failed to inspect source path {:?}: {}", source_path, e))?;
+    let source_metadata = match std::fs::metadata(source_path)
+        .map_err(|e| format!("Failed to inspect source path {:?}: {}", source_path, e))
+    {
+        Ok(m) => m,
+        Err(e) => return (0, Err(e)),
+    };
 
     // A directory move transfers its contents; a file move transfers the file itself.
     let (source_entries, bytes_total): (Vec<PathBuf>, u64) = if source_metadata.is_dir() {
-        let bytes_total = directory_size_bytes(source_path)
-            .map_err(|e| format!("Failed to measure size of source data at {:?}: {}", source_path, e))?;
-        let directory_entries: Vec<PathBuf> = std::fs::read_dir(source_path)
-            .and_then(|entries| {
-                entries.map(|entry| entry.map(|e| e.path())).collect()
-            })
-            .map_err(|e| format!("Failed to list source directory {:?}: {}", source_path, e))?;
+        let bytes_total = match directory_size_bytes(source_path)
+            .map_err(|e| format!("Failed to measure size of source data at {:?}: {}", source_path, e))
+        {
+            Ok(n) => n,
+            Err(e) => return (0, Err(e)),
+        };
+        let directory_entries: Vec<PathBuf> = match std::fs::read_dir(source_path)
+            .and_then(|entries| entries.map(|entry| entry.map(|e| e.path())).collect())
+            .map_err(|e| format!("Failed to list source directory {:?}: {}", source_path, e))
+        {
+            Ok(v) => v,
+            Err(e) => return (0, Err(e)),
+        };
         (directory_entries, bytes_total)
     } else {
         (vec![source_path.to_path_buf()], source_metadata.len())
@@ -1328,7 +1354,7 @@ fn move_card_data(
         let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total }];
         on_samples(&samples);
         let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
-        return Ok(());
+        return (bytes_total, Ok(()));
     }
 
     // The transfer binary blocks until it is done and offers no progress callback, so it
@@ -1357,37 +1383,37 @@ fn move_card_data(
         let _ = move_result_tx.send(result);
     });
 
-    loop {
-        crossbeam_channel::select! {
-            recv(move_result_rx) -> result => {
-                return match result {
-                    Ok(Ok(())) => {
-                        let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total }];
-                        on_samples(&samples);
-                        let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
-                        Ok(())
-                    }
-                    Ok(Err(message)) => Err(format!("Failed to move data to {:?}: {}", destination_dir, message)),
-                    Err(_) => Err("Move thread exited without reporting a result".to_owned()),
-                };
-            }
-            default(TRANSFER_SAMPLE_INTERVAL) => {
-                if let Ok(bytes_done) = directory_size_bytes(destination_dir) {
-                    let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done }];
-                    on_samples(&samples);
-                    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
-                }
-            }
+    let binary_outcome: Result<(), String> = loop {
+        let maybe_result: Option<Result<(), String>> = crossbeam_channel::select! {
+            recv(move_result_rx) -> result => Some(match result {
+                Ok(Ok(()))       => Ok(()),
+                Ok(Err(message)) => Err(format!("Failed to move data to {:?}: {}", destination_dir, message)),
+                Err(_)           => Err("Move thread exited without reporting a result".to_owned()),
+            }),
+            default(TRANSFER_SAMPLE_INTERVAL) => None,
+        };
+
+        if let Ok(bytes_done) = directory_size_bytes(destination_dir) {
+            let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done }];
+            on_samples(&samples);
+            let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
         }
-    }
+
+        if let Some(result) = maybe_result {
+            break result;
+        }
+    };
+
+    (bytes_total, binary_outcome)
 }
 
-// Show a fatal transfer error dialog and remove the transfer from the UI.
+// Mark the transfer as failed in the UI immediately, then show the fatal error dialog.
 fn show_transfer_error(
     ui: &Arc<Mutex<Box<dyn UiBackend>>>,
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
     message: String,
 ) {
+    let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferFailed);
     let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
     let _ = ui.lock().unwrap().user_query(
         ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
@@ -1397,7 +1423,6 @@ fn show_transfer_error(
         true,
     );
     let _ = response_rx.recv();
-    let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
 }
 
 #[cfg(test)]

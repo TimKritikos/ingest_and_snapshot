@@ -65,6 +65,13 @@ struct BackupLogTransferWritable {
     transfer_samples: Option<Vec<BackupLogSample>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transfer_performed_by: Option<String>,
+    /// Byte count of the destination directory measured once after the transfer binary exited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes_total_measured: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer_failed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_message: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -128,6 +135,13 @@ pub struct BackupLogTransfer {
     pub transfer_samples: Option<Vec<BackupLogSample>>,
     #[serde(default)]
     pub transfer_performed_by: Option<String>,
+    /// Byte count of the destination directory measured once after the transfer binary exited.
+    #[serde(default)]
+    pub bytes_total_measured: Option<u64>,
+    #[serde(default)]
+    pub transfer_failed: Option<bool>,
+    #[serde(default)]
+    pub failure_message: Option<String>,
 }
 
 /// Thread-safe writer for a single backup log entry.
@@ -202,6 +216,9 @@ impl BackupLogManager {
                     input_path_overridden:      t.input_path_overridden,
                     transfer_samples:           t.transfer_samples,
                     transfer_performed_by:      t.transfer_performed_by,
+                    bytes_total_measured:       t.bytes_total_measured,
+                    transfer_failed:            t.transfer_failed,
+                    failure_message:            t.failure_message,
                 }
             }).collect(),
         };
@@ -235,7 +252,27 @@ impl BackupLogManager {
             input_path_overridden:      Some(input_path_overridden),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
+            bytes_total_measured:       None,
+            transfer_failed:            None,
+            failure_message:            None,
         });
+        self.flush()
+    }
+
+    /// Records the final outcome of a transfer: the measured destination size and whether it failed.
+    /// Identified by `card_path`; silently does nothing if no matching transfer is found.
+    pub fn finalize_transfer(
+        &mut self,
+        card_path: &Path,
+        bytes_total_measured: u64,
+        failed: bool,
+        failure_message: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(transfer) = self.entry.new_transfers.iter_mut().find(|t| t.card_path == card_path) {
+            transfer.bytes_total_measured = Some(bytes_total_measured);
+            transfer.transfer_failed      = Some(failed);
+            transfer.failure_message      = failure_message;
+        }
         self.flush()
     }
 

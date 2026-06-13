@@ -551,9 +551,13 @@ fn main() {
                 let (bytes_total, ui_samples) = if transfer_samples.is_empty() {
                     // No recorded samples — show as a completed placeholder so the UI
                     // renders it as finished rather than stuck at zero progress.
-                    (1u64, vec![ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 }])
+                    let total = transfer.bytes_total_measured.unwrap_or(1);
+                    (total, vec![ui_api::TransferSample { timestamp_ms: 0, bytes_done: total }])
                 } else {
-                    let total = transfer_samples.last().unwrap().bytes_done;
+                    // Use the measured destination size as the chart total so the display
+                    // reflects what actually ended up on disk, not a re-derived sample value.
+                    let total = transfer.bytes_total_measured
+                        .unwrap_or_else(|| transfer_samples.last().unwrap().bytes_done);
                     let samples = transfer_samples.iter()
                         .map(|s| ui_api::TransferSample { timestamp_ms: s.timestamp_ms, bytes_done: s.bytes_done })
                         .collect();
@@ -561,6 +565,9 @@ fn main() {
                 };
                 transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total }).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(ui_samples)).unwrap();
+                if transfer.transfer_failed.unwrap_or(false) {
+                    transfer_event_tx.send(ui_api::TransferEvent::TransferFailed).unwrap();
+                }
             }
 
             let manager = backup_log::BackupLogManager::from_existing(
