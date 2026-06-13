@@ -500,7 +500,7 @@ fn run_transfer(
                         // Sender dropped — replace with a never-receiver to avoid a busy loop
                         notify_rx = crossbeam_channel::never();
                     } else if let Some(dir) = current_source_media_dir.clone() {
-                        if matches!(source_media_scheme(&dir, &all_source_media), CardNamingScheme::Card)
+                        if matches!(source_media_scheme(&dir, &all_source_media), CardNamingScheme::CardFourDigits)
                             && !card_id_manually_set
                         {
                             let next_card_id_result = registry.lock().unwrap().next_card_id(&dir, transfer_id);
@@ -677,7 +677,7 @@ fn run_transfer(
         };
 
         // For Card scheme: also check if there would be a sequence gap
-        let sequence_conflict = if matches!(scheme, CardNamingScheme::Card) && !is_taken {
+        let sequence_conflict = if matches!(scheme, CardNamingScheme::CardFourDigits) && !is_taken {
             let next_card_id_result = registry.lock().unwrap().next_card_id(&source_dir, transfer_id);
             match next_card_id_result {
                 Ok(next_sequential) => next_sequential != current_card_id,
@@ -702,7 +702,7 @@ fn run_transfer(
 
             // The "suggested" next sequential ID (UseNew option) —
             // only offer UseNew if auto-generation is applicable and there IS a next ID to suggest
-            let suggested_id = if matches!(scheme, CardNamingScheme::Card) {
+            let suggested_id = if matches!(scheme, CardNamingScheme::CardFourDigits) {
                 match registry.lock().unwrap().next_card_id(&source_dir, transfer_id) {
                     Ok(next) if next != current_card_id || is_taken => Some(next),
                     _ => None,
@@ -919,7 +919,7 @@ fn initial_card_id_and_register(
 
     let (card_id, pending) = match detected_card_id {
         Some(manual_id) if !manual_id.is_empty() => {
-            let scheme_number = if matches!(scheme, CardNamingScheme::Card) {
+            let scheme_number = if matches!(scheme, CardNamingScheme::CardFourDigits) {
                 crate::transfer_registry::parse_card_number(manual_id)
             } else {
                 None
@@ -927,7 +927,7 @@ fn initial_card_id_and_register(
             (manual_id.to_owned(), PendingCardId::Manual { scheme_number })
         }
         _ => match scheme {
-            CardNamingScheme::Card => {
+            CardNamingScheme::CardFourDigits => {
                 let reg = registry.lock().unwrap();
                 let id = reg.next_card_id(dir, transfer_id)?;
                 (id.clone(), PendingCardId::Auto(id))
@@ -966,7 +966,7 @@ fn handle_device_overwrite(
     // Determine the card ID to carry into the new source media entry.
     // Manually set IDs are kept as-is; auto IDs are regenerated for the new dir.
     let new_card_id = match source_media_scheme(&new_dir, all_source_media) {
-        CardNamingScheme::Card if !*card_id_manually_set => {
+        CardNamingScheme::CardFourDigits if !*card_id_manually_set => {
             match registry.lock().unwrap().next_card_id(&new_dir, transfer_id) {
                 Ok(id) => id,
                 Err(e) => {
@@ -1043,7 +1043,7 @@ fn handle_card_id_changed(
     let (final_id, pending, is_manual) = if new_id.is_empty() {
         // IF empty revert to auto if scheme supports it
         if let Some(dir) = source_dir {
-            if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::Card) {
+            if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::CardFourDigits) {
                 match registry.lock().unwrap().next_card_id(dir, transfer_id) {
                     Ok(auto_id) => {
                         let pending = PendingCardId::Auto(auto_id.clone());
@@ -1063,7 +1063,7 @@ fn handle_card_id_changed(
     } else {
         let scheme_number = source_dir
             .and_then(|dir| {
-                if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::Card) {
+                if matches!(source_media_scheme(dir, all_source_media), CardNamingScheme::CardFourDigits) {
                     crate::transfer_registry::parse_card_number(&new_id)
                 } else {
                     None

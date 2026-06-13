@@ -72,7 +72,7 @@ mod tests {
             device_model_name: "Camera".to_owned(),
             device_model_name_pretty: None,
             serial_number: "SN001".to_owned(),
-            new_card_naming_scheme: CardNamingScheme::Card,
+            new_card_naming_scheme: CardNamingScheme::CardFourDigits,
             directory: source_media_subdir.clone(),
         };
 

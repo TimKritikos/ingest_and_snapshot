@@ -84,7 +84,7 @@ struct SourceMediaUniqueIdentification {
 #[derive(Clone, Debug)]
 pub enum CardNamingScheme {
     /// Sequential CARD#### IDs, auto-generated. JSON value: "CARD%04d"
-    Card,
+    CardFourDigits,
     /// User must always supply the ID manually. JSON value: "freeform"
     Freeform,
 }
@@ -93,7 +93,7 @@ impl<'de> serde::Deserialize<'de> for CardNamingScheme {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
-            "CARD%04d" => Ok(CardNamingScheme::Card),
+            "CARD%04d" => Ok(CardNamingScheme::CardFourDigits),
             "freeform"  => Ok(CardNamingScheme::Freeform),
             _ => Err(serde::de::Error::custom(format!("Unknown card naming scheme: '{}'", s))),
         }

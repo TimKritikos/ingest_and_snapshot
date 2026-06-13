@@ -22,7 +22,7 @@ pub fn run() -> ! {
                     device_model_name:        "ILCE-7M4".to_string(),
                     device_model_name_pretty: Some("A7 IV".to_string()),
                     serial_number:            "4710293".to_string(),
-                    new_card_naming_scheme:   CardNamingScheme::Card,
+                    new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/sony_a7iv"),
                 },
                 SourceMediaEntry {
@@ -30,7 +30,7 @@ pub fn run() -> ! {
                     device_model_name:        "ILCE-7RM5".to_string(),
                     device_model_name_pretty: Some("A7R V".to_string()),
                     serial_number:            "8823015".to_string(),
-                    new_card_naming_scheme:   CardNamingScheme::Card,
+                    new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/sony_a7rv"),
                 },
                 SourceMediaEntry {
@@ -38,7 +38,7 @@ pub fn run() -> ! {
                     device_model_name:        "EOS R5".to_string(),
                     device_model_name_pretty: None,
                     serial_number:            "083059002910".to_string(),
-                    new_card_naming_scheme:   CardNamingScheme::Card,
+                    new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/canon_eos_r5"),
                 },
                 SourceMediaEntry {
@@ -54,7 +54,7 @@ pub fn run() -> ! {
                     device_model_name:        "Z 9".to_string(),
                     device_model_name_pretty: Some("Z9".to_string()),
                     serial_number:            "3102948576".to_string(),
-                    new_card_naming_scheme:   CardNamingScheme::Card,
+                    new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/nikon_z9"),
                 },
     ];
