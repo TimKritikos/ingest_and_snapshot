@@ -344,10 +344,10 @@ fn derive_overall_speed(samples: &[TransferSample]) -> u64 {
         return 0;
     }
     let transfer_time_window_ms = samples.last().unwrap().timestamp_ms.saturating_sub(samples[0].timestamp_ms);
-    let transfer_byte_count = samples.last().unwrap().bytes_done;
+    let bytes_in_window = samples.last().unwrap().bytes_done.saturating_sub(samples[0].bytes_done);
     if transfer_time_window_ms > 0 {
-        transfer_byte_count * 1000 / transfer_time_window_ms
-    }else{ 0 }
+        bytes_in_window * 1000 / transfer_time_window_ms
+    } else { 0 }
 }
 
 fn derive_peak_speed(samples: &[TransferSample]) -> u64 {
