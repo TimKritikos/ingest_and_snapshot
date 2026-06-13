@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
@@ -347,6 +347,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                 _ => {}
             }
         }
+        Some(UserQuery::CardIdInLogWarning(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
+                    if let Some(UserQuery::CardIdInLogWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(CardIdInLogWarningResponse::BackToQuery);
+                    }
+                }
+                KeyCode::Esc => {
+                    if let Some(UserQuery::CardIdInLogWarning(query)) = query_queue.pop_front() {
+                        let _ = query.response_tx.send(CardIdInLogWarningResponse::Cancel);
+                    }
+                }
+                _ => {}
+            }
+        }
         None => {}
     }
 }
@@ -406,6 +421,7 @@ pub fn render(
         UserQuery::NoDeviceLocationWarning(query) => render_no_device_location_warning(frame, padded, &query.reason),
         UserQuery::NoInputPathWarning(_) => render_no_input_path_warning(frame, padded),
         UserQuery::NewBackupLog(query) => render_new_backup_log(frame, padded, query),
+        UserQuery::CardIdInLogWarning(query) => render_card_id_in_log_warning(frame, padded, query),
     }
 }
 
@@ -1271,6 +1287,41 @@ fn render_new_backup_log(frame: &mut Frame, area: Rect, _query: &NewBackupLogQue
             Span::styled(" Create new log   ", hint),
             Span::styled("[Esc]", quit),
             Span::styled(" Quit", hint),
+        ]),
+    ];
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
+}
+
+fn render_card_id_in_log_warning(frame: &mut Frame, area: Rect, query: &CardIdInLogWarningQuery) {
+    let error   = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let label   = Style::default().fg(Color::Black);
+    let value   = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let hint    = Style::default().fg(Color::Black);
+    let back    = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let cancel  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(vec![Span::styled("Error: card ID already in backup log", error)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Card ID ", label),
+            Span::styled(query.card_id.as_str(), value),
+            Span::styled(" already has a transfer recorded in the backup log.", label),
+        ]),
+        Line::from(vec![Span::styled("The card directory may have been deleted and its ID reused.", label)]),
+        Line::from(vec![Span::styled("Go back to choose a different card ID.", label)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter]", back),
+            Span::styled(" Back to query   ", hint),
+            Span::styled("[Esc]", cancel),
+            Span::styled(" Cancel transfer", hint),
         ]),
     ];
     let content_height = lines.len() as u16;

@@ -201,6 +201,16 @@ pub enum NewBackupLogResponse {
     Quit,
 }
 
+pub struct CardIdInLogWarningQuery {
+    pub card_id: String,
+    pub response_tx: Sender<CardIdInLogWarningResponse>,
+}
+
+pub enum CardIdInLogWarningResponse {
+    BackToQuery,
+    Cancel,
+}
+
 pub enum UserQuery {
     ApproveTransfer(ApproveTransferQuery),
     UnknownDevice(UnknownDeviceQuery),
@@ -212,6 +222,7 @@ pub enum UserQuery {
     NoDeviceLocationWarning(NoDeviceLocationWarningQuery),
     NoInputPathWarning(NoInputPathWarningQuery),
     NewBackupLog(NewBackupLogQuery),
+    CardIdInLogWarning(CardIdInLogWarningQuery),
 }
 
 /// Messages the UI sends back to the main logic.

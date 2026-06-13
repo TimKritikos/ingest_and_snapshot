@@ -132,6 +132,11 @@ impl BackupLogManager {
         self.flush()
     }
 
+    /// Returns true if the log already contains a transfer recorded for `card_path`.
+    pub fn has_transfer_for_card_path(&self, card_path: &Path) -> bool {
+        self.entry.new_transfers.iter().any(|t| t.card_path == card_path)
+    }
+
     /// Appends samples to an existing transfer record and flushes to disk atomically.
     /// Identified by `card_path`; silently does nothing if no matching transfer is found.
     pub fn update_transfer_samples(&mut self, card_path: &Path, new_samples: Vec<BackupLogSample>) -> Result<(), String> {

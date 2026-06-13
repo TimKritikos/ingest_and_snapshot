@@ -769,8 +769,45 @@ fn run_transfer(
                 }
             }
         } else {
-            // No conflict — create the card directory while still holding the lock
             drop(_lock_guard);
+
+            // Reject a card ID that already has a transfer entry in the backup log.
+            // This catches the case where a card directory was deleted and its ID
+            // reused: without this check, update_transfer_samples would silently write
+            // the new transfer's samples into the old log entry (find() returns the
+            // first match), leaving the new entry with no recorded samples.
+            let would_be_dest = source_dir.join("DATA").join(&current_card_id);
+            let would_be_card_path = would_be_dest.strip_prefix(&media_dir)
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| would_be_dest.clone());
+            if backup_log_manager.lock().unwrap().has_transfer_for_card_path(&would_be_card_path) {
+                let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::CardIdInLogWarningResponse>();
+                if ui.lock().unwrap().user_query(
+                    ui_api::UserQuery::CardIdInLogWarning(ui_api::CardIdInLogWarningQuery {
+                        card_id: current_card_id.clone(),
+                        response_tx: warn_tx,
+                    }),
+                    true,
+                ).is_err() {
+                    registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                        .expect("unregister: transfer must be registered before unregistering");
+                    return;
+                }
+                match warn_rx.recv() {
+                    Ok(ui_api::CardIdInLogWarningResponse::BackToQuery) | Err(_) => {
+                        is_re_approval = true;
+                        continue 'approval_loop;
+                    }
+                    Ok(ui_api::CardIdInLogWarningResponse::Cancel) => {
+                        let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                        registry.lock().unwrap().unregister(transfer_id, &source_dir)
+                            .expect("unregister: transfer must be registered before unregistering");
+                        return;
+                    }
+                }
+            }
+
+            // No conflict — create the card directory
             if let Err(e) = create_card_directory(&source_dir, &current_card_id) {
                 show_card_id_error(&ui, Some(&transfer_event_tx), format!("Failed to create card directory: {}", e));
                 registry.lock().unwrap().unregister(transfer_id, &source_dir)
@@ -1354,3 +1391,7 @@ fn show_transfer_error(
     let _ = response_rx.recv();
     let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
 }
+
+#[cfg(test)]
+#[path = "transfer_logic_tests.rs"]
+mod tests;
