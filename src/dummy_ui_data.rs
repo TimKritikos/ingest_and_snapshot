@@ -288,7 +288,6 @@ pub fn run() -> ! {
                     initial_data: ui_api::ApproveTransferQueryUpdate {
                         source_media_dir: ui_api::TransferFieldState::AutoSelected(Some("/media/source_media/nikon_z9".to_string())),
                         source_device:    ui_api::TransferFieldState::AutoSelected(Some("Sony SF-G 64GB".to_string())),
-                        data_size:        12 * 1024 * 1024 * 1024,
                         card_id:          ui_api::TransferFieldState::AutoSelected(Some("NIKON_001".to_string())),
                         device_location:  ui_api::TransferFieldState::AutoSelected(auto_detected_device_location_approve.clone()),
                         input_path:       ui_api::TransferFieldState::AutoSelected(None),
@@ -345,7 +344,6 @@ pub fn run() -> ! {
                                 } else {
                                     ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
                                 },
-                                data_size: 12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(new_card_id)
                                 } else {
@@ -379,7 +377,6 @@ pub fn run() -> ! {
                                     ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
                                 },
                                 source_device:    ui_api::TransferFieldState::Overridden(display),
-                                data_size:        12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -409,7 +406,6 @@ pub fn run() -> ! {
                                     ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
                                 },
                                 source_device:    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone())),
-                                data_size:        12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -443,7 +439,6 @@ pub fn run() -> ! {
                                 } else {
                                     ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
                                 },
-                                data_size: 12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -472,7 +467,6 @@ pub fn run() -> ! {
                                 } else {
                                     ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
                                 },
-                                data_size: 12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -501,7 +495,6 @@ pub fn run() -> ! {
                                 } else {
                                     ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
                                 },
-                                data_size: 12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -559,7 +552,6 @@ pub fn run() -> ! {
                                 } else {
                                     ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
                                 },
-                                data_size: 12 * 1024 * 1024 * 1024,
                                 card_id: if current_card_id_overridden {
                                     ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                 } else {
@@ -612,7 +604,6 @@ pub fn run() -> ! {
                         initial_data: ui_api::ApproveTransferQueryUpdate {
                             source_media_dir: ui_api::TransferFieldState::AutoSelected(None),
                             source_device:    ui_api::TransferFieldState::AutoSelected(None),
-                            data_size:        0,
                             card_id:          ui_api::TransferFieldState::AutoSelected(None),
                             device_location:  ui_api::TransferFieldState::AutoSelected(None),
                             input_path:       ui_api::TransferFieldState::AutoSelected(None),
@@ -660,7 +651,6 @@ pub fn run() -> ! {
                                         } else {
                                             ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
                                         },
-                                        data_size: 0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {
@@ -693,7 +683,6 @@ pub fn run() -> ! {
                                             ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
                                         },
                                         source_device:    ui_api::TransferFieldState::Overridden(display),
-                                        data_size:        0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {
@@ -727,7 +716,6 @@ pub fn run() -> ! {
                                         } else {
                                             ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
                                         },
-                                        data_size: 0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {
@@ -760,7 +748,6 @@ pub fn run() -> ! {
                                         } else {
                                             ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
                                         },
-                                        data_size: 0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {
@@ -789,7 +776,6 @@ pub fn run() -> ! {
                                         } else {
                                             ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
                                         },
-                                        data_size: 0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {
@@ -818,7 +804,6 @@ pub fn run() -> ! {
                                         } else {
                                             ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
                                         },
-                                        data_size: 0,
                                         card_id: if current_card_id_overridden {
                                             ui_api::TransferFieldState::Overridden(current_card_id.clone())
                                         } else {

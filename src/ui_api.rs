@@ -99,7 +99,6 @@ pub enum ConfirmCardIdResponse {
 pub struct ApproveTransferQueryUpdate {
     pub source_media_dir: TransferFieldState<String>,
     pub source_device: TransferFieldState<String>,
-    pub data_size: u64,
     pub card_id: TransferFieldState<String>,
     pub device_location: TransferFieldState<String>,
     /// Virtual path on the source device (e.g. `PathBuf::from("/DCIM")`).

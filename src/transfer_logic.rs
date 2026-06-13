@@ -166,7 +166,6 @@ fn run_transfer(
             ui_api::ApproveTransferQueryUpdate {
                 source_media_dir: ui_api::TransferFieldState::Frozen,
                 source_device:    ui_api::TransferFieldState::Frozen,
-                data_size:        0,
                 card_id:          ui_api::TransferFieldState::Frozen,
                 device_location:  ui_api::TransferFieldState::AutoSelected(current_device_location.clone()),
                 input_path:       ui_api::TransferFieldState::Frozen,
@@ -1138,7 +1137,6 @@ fn query_update_from_state(
         } else {
             ui_api::TransferFieldState::AutoSelected(if source_device.is_empty() { None } else { Some(source_device.to_owned()) })
         },
-        data_size: 0,
         card_id: if card_id_overridden {
             ui_api::TransferFieldState::Overridden(card_id.to_owned())
         } else {

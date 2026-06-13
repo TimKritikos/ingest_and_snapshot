@@ -699,7 +699,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let none_style   = Style::default().fg(Color::DarkGray);
     let hint_style   = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
     let data = &query.initial_data;
-    let size_str = super::format_bytes(data.data_size);
 
     // Builds a display Line for one transfer field. Rendering varies by state:
     //   Frozen          → "Loading..."  in none_style   (placeholder until animated braille is added)
@@ -784,10 +783,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
         field_line("  Storage device: ", Some("[D] "), &data.source_device),
         field_line(" Device location: ", Some("[L] "), &device_location_display),
         field_line("      Input path: ", Some("[I] "), &input_path_display),
-        Line::from(vec![
-            Span::styled("  Transfer Size: ", label_style),
-            Span::styled(size_str,            value_style),
-        ]),
     ];
 
     frame.render_widget(Paragraph::new(lines), area);
