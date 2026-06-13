@@ -547,13 +547,14 @@ fn main() {
                 let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                 ui.lock().unwrap().new_transfer(source_media_dir, transfer_event_rx).unwrap();
 
-                let (bytes_total, ui_samples) = if transfer.transfer_samples.is_empty() {
+                let transfer_samples = transfer.transfer_samples.as_deref().unwrap_or(&[]);
+                let (bytes_total, ui_samples) = if transfer_samples.is_empty() {
                     // No recorded samples — show as a completed placeholder so the UI
                     // renders it as finished rather than stuck at zero progress.
                     (1u64, vec![ui_api::TransferSample { timestamp_ms: 0, bytes_done: 1 }])
                 } else {
-                    let total = transfer.transfer_samples.last().unwrap().bytes_done;
-                    let samples = transfer.transfer_samples.iter()
+                    let total = transfer_samples.last().unwrap().bytes_done;
+                    let samples = transfer_samples.iter()
                         .map(|s| ui_api::TransferSample { timestamp_ms: s.timestamp_ms, bytes_done: s.bytes_done })
                         .collect();
                     (total, samples)
@@ -566,6 +567,7 @@ fn main() {
                 backup_log_dir,
                 entry.current_uuidv7,
                 entry.previous_uuidv7,
+                entry.next_uuidv7,
                 entry.comment,
                 entry.new_transfers,
             );

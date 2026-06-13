@@ -42,16 +42,27 @@ pub struct BackupLogSample {
 #[derive(Serialize, Clone)]
 struct BackupLogTransferWritable {
     card_path: PathBuf,
-    card_id: String,
-    source_media_overridden: bool,
-    card_id_overridden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_media_overridden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_id_overridden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     medium_uuidv7: Option<String>,
-    medium_uuidv7_overridden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    medium_uuidv7_overridden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     device_location: Option<String>,
-    device_location_overridden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_location_overridden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     input_path: Option<PathBuf>,
-    input_path_overridden: bool,
-    transfer_samples: Vec<BackupLogSample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_path_overridden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer_samples: Option<Vec<BackupLogSample>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     transfer_performed_by: Option<String>,
 }
 
@@ -59,9 +70,12 @@ struct BackupLogTransferWritable {
 struct BackupLogEntryWritable {
     data_type: String,
     data_structure_version: BackupLogStructureVersion,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_uuidv7: Option<String>,
     current_uuidv7: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     next_uuidv7: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     comment: Option<String>,
     completed_backup: bool,
     new_transfers: Vec<BackupLogTransferWritable>,
@@ -73,36 +87,45 @@ struct BackupLogHeader {
     data_structure_version: BackupLogStructureVersion,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize)]
 pub struct BackupLogEntry {
+    #[serde(default)]
     pub previous_uuidv7: Option<String>,
     pub current_uuidv7: String,
+    #[serde(default)]
     pub next_uuidv7: Option<String>,
+    #[serde(default)]
     pub comment: Option<String>,
     pub completed_backup: bool,
     pub new_transfers: Vec<BackupLogTransfer>,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize)]
 pub struct BackupLogTransfer {
     pub card_path: PathBuf,
     #[serde(default)]
-    pub card_id: String,
+    pub card_id: Option<String>,
     #[serde(default)]
-    pub source_media_overridden: bool,
+    pub source_media_overridden: Option<bool>,
     #[serde(default)]
-    pub card_id_overridden: bool,
+    pub card_id_overridden: Option<bool>,
+    #[serde(default)]
     pub medium_uuidv7: Option<String>,
     #[serde(default)]
-    pub medium_uuidv7_overridden: bool,
+    pub medium_uuidv7_overridden: Option<bool>,
+    #[serde(default)]
     pub device_location: Option<String>,
     #[serde(default)]
-    pub device_location_overridden: bool,
+    pub device_location_overridden: Option<bool>,
+    #[serde(default)]
     pub input_path: Option<PathBuf>,
     #[serde(default)]
-    pub input_path_overridden: bool,
+    pub input_path_overridden: Option<bool>,
     #[serde(default)]
-    pub transfer_samples: Vec<BackupLogSample>,
+    pub transfer_samples: Option<Vec<BackupLogSample>>,
+    #[serde(default)]
     pub transfer_performed_by: Option<String>,
 }
 
@@ -149,6 +172,7 @@ impl BackupLogManager {
         log_dir: PathBuf,
         current_uuidv7: String,
         previous_uuidv7: Option<String>,
+        next_uuidv7: Option<String>,
         comment: Option<String>,
         existing_transfers: Vec<BackupLogTransfer>,
     ) -> Self {
@@ -160,7 +184,7 @@ impl BackupLogManager {
             },
             previous_uuidv7,
             current_uuidv7,
-            next_uuidv7: None,
+            next_uuidv7,
             comment,
             completed_backup: false,
             new_transfers: existing_transfers.into_iter().map(|t| {
@@ -199,17 +223,17 @@ impl BackupLogManager {
     ) -> Result<(), String> {
         self.entry.new_transfers.push(BackupLogTransferWritable {
             card_path,
-            card_id,
-            source_media_overridden,
-            card_id_overridden,
+            card_id:                    Some(card_id),
+            source_media_overridden:    Some(source_media_overridden),
+            card_id_overridden:         Some(card_id_overridden),
             medium_uuidv7,
-            medium_uuidv7_overridden,
+            medium_uuidv7_overridden:   Some(medium_uuidv7_overridden),
             device_location,
-            device_location_overridden,
+            device_location_overridden: Some(device_location_overridden),
             input_path,
-            input_path_overridden,
-            transfer_samples: Vec::new(),
-            transfer_performed_by: Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
+            input_path_overridden:      Some(input_path_overridden),
+            transfer_samples:           Some(Vec::new()),
+            transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
         });
         self.flush()
     }
@@ -223,7 +247,7 @@ impl BackupLogManager {
     /// Identified by `card_path`; silently does nothing if no matching transfer is found.
     pub fn update_transfer_samples(&mut self, card_path: &Path, new_samples: Vec<BackupLogSample>) -> Result<(), String> {
         if let Some(transfer) = self.entry.new_transfers.iter_mut().find(|t| t.card_path == card_path) {
-            transfer.transfer_samples.extend(new_samples);
+            transfer.transfer_samples.get_or_insert_with(Vec::new).extend(new_samples);
         }
         self.flush()
     }
@@ -315,6 +339,7 @@ pub fn load_backup_log(media_dir: &PathBuf) -> Result<BackupLogState, String> {
     }
 }
 
+
 /// Updates the `next_uuidv7` field of an already-written entry atomically.
 fn set_next_uuidv7_on_entry(log_dir: &Path, entry_uuid: &str, next_uuid: &str) -> Result<(), String> {
     let file_path = log_dir.join(format!("{}.json", entry_uuid));
@@ -332,3 +357,7 @@ fn set_next_uuidv7_on_entry(log_dir: &Path, entry_uuid: &str, next_uuid: &str) -
         .map_err(|e| format!("Failed to finalize {}: {}", file_path.display(), e))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "backup_log_tests.rs"]
+mod tests;
