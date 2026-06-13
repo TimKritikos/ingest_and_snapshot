@@ -241,10 +241,10 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
 
     if intervals.is_empty() { return; }
 
-    let max_speed = intervals.iter().map(|&(_, s)| s).max().unwrap_or(1).max(1);
-
-    // Calculate the height of each breille column regardless of if it represents more or less than one sample
-    let mut heights = vec![0usize; total_braille_cols];
+    // Calculate the per-bucket averaged speed for each braille column. max_speed must be derived
+    // from these same averaged values — not from raw interval peaks — so that the tallest column
+    // always reaches the top row after normalization.
+    let mut final_speeds = vec![0u64; total_braille_cols];
     for bc in 0..progress_dot_width {
 
         // Calculate the byte (and by extension precentage) range this dot represents.
@@ -262,7 +262,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
         }
 
         // Nearest-neighbor fallback when no interval falls in this bucket
-        let final_speed = if sample_count > 0 {
+        final_speeds[bc] = if sample_count > 0 {
             speed_sum / sample_count as u64
         } else {
             let byte_mid  = byte_from / 2 + byte_to / 2;
@@ -272,8 +272,14 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
                 .map(|&(_, s)| s)
                 .unwrap_or(0)
         };
+    }
 
-        heights[bc] = ((final_speed as u128 * total_braille_rows as u128) / max_speed as u128)
+    let max_speed = final_speeds[..progress_dot_width].iter().copied().max().unwrap_or(1).max(1);
+
+    // Calculate the height of each braille column regardless of if it represents more or less than one sample
+    let mut heights = vec![0usize; total_braille_cols];
+    for bc in 0..progress_dot_width {
+        heights[bc] = ((final_speeds[bc] as u128 * total_braille_rows as u128) / max_speed as u128)
             .min(total_braille_rows as u128) as usize;
     }
 
