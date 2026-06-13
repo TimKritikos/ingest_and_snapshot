@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use serde_json::ser::PrettyFormatter;
 
 const BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
 const BACKUP_LOG_STRUCTURE_MAJOR: u32 = 0;
@@ -252,12 +253,21 @@ impl BackupLogManager {
         self.flush()
     }
 
+
     fn flush(&self) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(&self.entry)
+
+        let mut json = Vec::new();
+
+        let formatter = PrettyFormatter::with_indent(b"\t");
+        let mut serializer = serde_json::Serializer::with_formatter(&mut json, formatter);
+
+        self.entry.serialize(&mut serializer)
             .map_err(|e| format!("Failed to serialize backup log entry: {}", e))?;
+
         let file_path = self.log_dir.join(format!("{}.json", self.entry.current_uuidv7));
         let tmp_path  = self.log_dir.join(format!("{}.json.tmp", self.entry.current_uuidv7));
-        std::fs::write(&tmp_path, json.as_bytes())
+
+        std::fs::write(&tmp_path, json)
             .map_err(|e| format!("Failed to write backup log to {}: {}", tmp_path.display(), e))?;
         std::fs::rename(&tmp_path, &file_path)
             .map_err(|e| format!("Failed to finalize backup log at {}: {}", file_path.display(), e))?;
