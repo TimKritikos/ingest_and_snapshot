@@ -885,6 +885,7 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
         FatalErrorKind::BackupLog(msg)   => ("Failed to load backup log", msg.as_str()),
         FatalErrorKind::CardId(msg)      => ("Card ID handling error", msg.as_str()),
         FatalErrorKind::Transfer(msg)    => ("Data transfer error", msg.as_str()),
+        FatalErrorKind::ActiveTransfers  => ("Cannot quit while transfers are in progress", "Please wait for all active transfers to complete before quitting."),
     };
 
     let rows = Layout::default()

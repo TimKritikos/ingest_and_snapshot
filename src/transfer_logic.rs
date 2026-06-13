@@ -42,10 +42,10 @@ pub fn spawn_transfer(
     detected: DetectedTransferInfo,
     backup_log_manager: Arc<std::sync::Mutex<crate::backup_log::BackupLogManager>>,
     media_dir: std::path::PathBuf,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         run_transfer(ui, registry, mount_manager, all_source_media, all_storage_devices, all_device_locations, detected, backup_log_manager, media_dir);
-    });
+    })
 }
 
 fn run_transfer(

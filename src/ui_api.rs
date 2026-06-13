@@ -148,6 +148,7 @@ pub enum FatalErrorKind {
     BackupLog(String),
     CardId(String),
     Transfer(String),
+    ActiveTransfers,
 }
 
 pub struct FatalErrorQuery {

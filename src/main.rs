@@ -613,6 +613,8 @@ fn main() {
         }
     };
 
+    let mut transfer_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
     let monitor = MonitorBuilder::new()
         .unwrap()
         .match_subsystem("block")
@@ -656,7 +658,7 @@ fn main() {
             }
         }
         for (real_path, by_id_name, _) in startup_allowed {
-            transfer_logic::spawn_transfer(
+            transfer_handles.push(transfer_logic::spawn_transfer(
                 Arc::clone(&ui),
                 Arc::clone(&registry),
                 Arc::clone(&mount_manager),
@@ -672,7 +674,7 @@ fn main() {
                 },
                 Arc::clone(&backup_log_manager),
                 media_dir.clone(),
-            );
+            ));
         }
 
         for (real_path, by_id_name, syspath) in startup_unknown {
@@ -696,7 +698,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    transfer_logic::spawn_transfer(
+                    transfer_handles.push(transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
                         Arc::clone(&mount_manager),
@@ -712,7 +714,7 @@ fn main() {
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),
-                    );
+                    ));
                 }
                 ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                     ignore_device_list.push(by_id_name.clone());
@@ -727,7 +729,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    transfer_logic::spawn_transfer(
+                    transfer_handles.push(transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
                         Arc::clone(&mount_manager),
@@ -743,7 +745,7 @@ fn main() {
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),
-                    );
+                    ));
                 }
                 ui_api::UnknownDeviceResponse::Ignore => {}
             }
@@ -755,12 +757,25 @@ fn main() {
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {
-                    mount_manager.lock().unwrap().unmount_all_sync();
-                    ui.lock().unwrap().quit().unwrap();
-                    break 'outer;
+                    transfer_handles.retain(|h| !h.is_finished());
+                    if !transfer_handles.is_empty() {
+                        let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+                        let _ = ui.lock().unwrap().user_query(
+                            ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                                error: ui_api::FatalErrorKind::ActiveTransfers,
+                                response_tx,
+                            }),
+                            true,
+                        );
+                        let _ = response_rx.recv();
+                    } else {
+                        mount_manager.lock().unwrap().unmount_all_sync();
+                        ui.lock().unwrap().quit().unwrap();
+                        break 'outer;
+                    }
                 }
                 ui_api::UiToLogicMessage::StartManualTransfer => {
-                    transfer_logic::spawn_transfer(
+                    transfer_handles.push(transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
                         Arc::clone(&mount_manager),
@@ -776,7 +791,7 @@ fn main() {
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),
-                    );
+                    ));
                 }
                 ui_api::UiToLogicMessage::UnmountRequest(mount_id) => {
                     mount_manager::start_unmount(
@@ -799,7 +814,7 @@ fn main() {
                         }
                         syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
                         syspath_to_real_path.insert(syspath, real_path.clone());
-                        transfer_logic::spawn_transfer(
+                        transfer_handles.push(transfer_logic::spawn_transfer(
                             Arc::clone(&ui),
                             Arc::clone(&registry),
                             Arc::clone(&mount_manager),
@@ -815,7 +830,7 @@ fn main() {
                             },
                             Arc::clone(&backup_log_manager),
                             media_dir.clone(),
-                        );
+                        ));
                     }
                     Some(DeviceFilterResult::Unknown { real_path, by_id_name }) => {
                         let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
@@ -838,7 +853,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                transfer_logic::spawn_transfer(
+                                transfer_handles.push(transfer_logic::spawn_transfer(
                                     Arc::clone(&ui),
                                     Arc::clone(&registry),
                                     Arc::clone(&mount_manager),
@@ -854,7 +869,7 @@ fn main() {
                                     },
                                     Arc::clone(&backup_log_manager),
                                     media_dir.clone(),
-                                );
+                                ));
                             }
                             ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                                 ignore_device_list.push(by_id_name.clone());
@@ -869,7 +884,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                transfer_logic::spawn_transfer(
+                                transfer_handles.push(transfer_logic::spawn_transfer(
                                     Arc::clone(&ui),
                                     Arc::clone(&registry),
                                     Arc::clone(&mount_manager),
@@ -885,7 +900,7 @@ fn main() {
                                     },
                                     Arc::clone(&backup_log_manager),
                                     media_dir.clone(),
-                                );
+                                ));
                             }
                             ui_api::UnknownDeviceResponse::Ignore => {}
                         }
