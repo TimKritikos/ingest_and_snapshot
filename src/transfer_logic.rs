@@ -59,6 +59,7 @@ fn run_transfer(
     backup_log_manager: Arc<std::sync::Mutex<crate::backup_log::BackupLogManager>>,
     media_dir: std::path::PathBuf,
 ) {
+    let transfer_uuidv7 = uuid::Uuid::now_v7().to_string();
     // "Local filesystem" is always a valid device location option regardless of connected hardware
     let all_device_locations = {
         let mut locations = vec![LOCAL_FILESYSTEM_DEVICE_LOCATION.to_owned()];
@@ -858,7 +859,9 @@ fn run_transfer(
     let card_path_relative = destination_dir.strip_prefix(&media_dir)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| destination_dir.clone());
+
     if let Err(e) = backup_log_manager.lock().unwrap().add_transfer(
+        transfer_uuidv7,
         card_path_relative.clone(),
         current_card_id.clone(),
         current_device_overridden,

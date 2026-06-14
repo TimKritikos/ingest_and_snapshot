@@ -93,6 +93,7 @@ mod tests {
             comment:          Some("My first backup session".to_owned()),
             completed_backup: false,
             new_transfers: vec![BackupLogTransfer {
+                transfer_uuidv7:            Some("019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned()),
                 card_path:                  PathBuf::from("source_media/cam/DATA/CARD0003"),
                 card_id:                    Some("CARD0003".to_owned()),
                 source_media_overridden:    Some(true),

@@ -42,6 +42,8 @@ pub struct BackupLogSample {
 
 #[derive(Serialize, Clone)]
 struct BackupLogTransferWritable {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer_uuidv7:Option<String>,
     card_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     card_id: Option<String>,
@@ -112,6 +114,8 @@ pub struct BackupLogEntry {
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize)]
 pub struct BackupLogTransfer {
+    #[serde(default)]
+    pub transfer_uuidv7:Option<String>,
     pub card_path: PathBuf,
     #[serde(default)]
     pub card_id: Option<String>,
@@ -204,6 +208,7 @@ impl BackupLogManager {
             completed_backup: false,
             new_transfers: existing_transfers.into_iter().map(|t| {
                 BackupLogTransferWritable {
+                    transfer_uuidv7:            t.transfer_uuidv7,
                     card_path:                  t.card_path,
                     card_id:                    t.card_id,
                     source_media_overridden:    t.source_media_overridden,
@@ -228,6 +233,7 @@ impl BackupLogManager {
     /// Appends a new transfer record and flushes to disk atomically.
     pub fn add_transfer(
         &mut self,
+        transfer_uuidv7: String,
         card_path: PathBuf,
         card_id: String,
         source_media_overridden: bool,
@@ -240,6 +246,7 @@ impl BackupLogManager {
         input_path_overridden: bool,
     ) -> Result<(), String> {
         self.entry.new_transfers.push(BackupLogTransferWritable {
+            transfer_uuidv7:            Some(transfer_uuidv7),
             card_path,
             card_id:                    Some(card_id),
             source_media_overridden:    Some(source_media_overridden),
@@ -269,7 +276,7 @@ impl BackupLogManager {
         failure_message: Option<String>,
     ) -> Result<(), String> {
         if let Some(transfer) = self.entry.new_transfers.iter_mut().find(|t| t.card_path == card_path) {
-            transfer.bytes_total_measured = Some(bytes_total_measured);
+            transfer.bytes_total_measured = Some(bytes_total_measured); //TODO: remove that from here
             transfer.transfer_failed      = Some(failed);
             transfer.failure_message      = failure_message;
         }

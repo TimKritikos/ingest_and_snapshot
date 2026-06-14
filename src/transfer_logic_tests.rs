@@ -57,6 +57,7 @@ mod tests {
         std::fs::create_dir_all(&backup_log_dir).unwrap();
         let mut log_manager = BackupLogManager::create_new(backup_log_dir, None).unwrap();
         log_manager.add_transfer(
+            "019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned(),
             std::path::PathBuf::from("source_media/test_cam/DATA/CARD0000"),
             "CARD0000".to_owned(),
             false, false, None, false, None, false, None, false,
