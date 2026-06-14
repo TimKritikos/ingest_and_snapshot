@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, system_info: Option<&SystemInfo>, m
         ]
     ).right_aligned();
 
-    let mount_text = format!(" {} Filesystems [F] ", mount_count);
+    let mount_text = format!(" {} Filesystem{} [F] ", mount_count, if mount_count==1 { "" } else { "s" } );
     let mount_widget_width: u16 = mount_text.len().try_into().unwrap_or(30);
 
     let status_items = Layout::default()
