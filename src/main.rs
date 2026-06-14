@@ -571,14 +571,7 @@ fn main() {
                 }
             }
 
-            let manager = backup_log::BackupLogManager::from_existing(
-                backup_log_dir,
-                entry.current_uuidv7,
-                entry.previous_uuidv7,
-                entry.next_uuidv7,
-                entry.comment,
-                entry.new_transfers,
-            );
+            let manager = backup_log::BackupLogManager::from_existing(backup_log_dir, entry);
             Arc::new(Mutex::new(manager))
         }
         backup_log::BackupLogState::CreateNewEntry { previous_uuidv7 } => {

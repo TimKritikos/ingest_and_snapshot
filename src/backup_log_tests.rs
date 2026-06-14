@@ -61,14 +61,7 @@ mod tests {
             BackupLogState::CreateNewEntry { .. } => panic!("expected UseExistingEntry"),
         };
 
-        let mut manager = BackupLogManager::from_existing(
-            log_dir.clone(),
-            entry.current_uuidv7.clone(),
-            entry.previous_uuidv7,
-            entry.next_uuidv7,
-            entry.comment,
-            entry.new_transfers,
-        );
+        let mut manager = BackupLogManager::from_existing(log_dir.clone(), entry);
 
         manager.update_transfer_samples(Path::new("__no_match__"), vec![]).unwrap();
 
@@ -84,6 +77,8 @@ mod tests {
     /// next_uuidv7 test to cover it automatically.
     fn make_maximal_entry() -> BackupLogEntry {
         BackupLogEntry {
+            data_type: "backup_log_data".to_owned(),
+            data_structure_version: BackupLogStructureVersion { major: 0, capability_level: 0 },
             previous_uuidv7: Some("test-uuid-prev".to_owned()),
             current_uuidv7:  "test-uuid-maximal".to_owned(),
             // next_uuidv7 is None: load_backup_log follows the link when it is set, so
@@ -119,21 +114,15 @@ mod tests {
 
     /// Converts a BackupLogEntry into the on-disk JSON format.
     ///
-    /// Adds the write-only constant fields (data_type, data_structure_version) that
-    /// BackupLogEntry does not carry, and removes next_uuidv7 (None serialises to null
-    /// on the test-only Serialize impl, but the writable struct omits it via
-    /// skip_serializing_if when None).
+    /// Since BackupLogEntry serialises directly to the on-disk format, this is a
+    /// straight conversion. The assertion on next_uuidv7 is kept because the
+    /// round-trip helper cannot exercise that link-following path (load_backup_log
+    /// follows next_uuidv7 chains, so the entry returned is always the tail).
     fn entry_to_log_json(entry: &BackupLogEntry) -> Value {
         assert!(entry.next_uuidv7.is_none(),
             "entry_to_log_json only supports next_uuidv7 = None; \
              use set_next_uuidv7_on_entry to write it onto an existing file");
-        let mut value = serde_json::to_value(entry).unwrap();
-        let obj = value.as_object_mut().unwrap();
-        obj.insert("data_type".to_owned(), Value::String("backup_log_data".to_owned()));
-        obj.insert("data_structure_version".to_owned(),
-                   serde_json::json!({"major": 0, "capability_level": 0}));
-        obj.remove("next_uuidv7");
-        value
+        serde_json::to_value(entry).unwrap()
     }
 
     #[test]

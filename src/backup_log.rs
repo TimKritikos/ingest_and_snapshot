@@ -28,9 +28,9 @@ const BACKUP_LOG_CAPABILITY_LEVEL: u32 = 0;
 pub const BACKUP_LOG_DATA_DIR_NAME: &str = "backup_log_data";
 
 #[derive(Serialize, Deserialize, Clone)]
-struct BackupLogStructureVersion {
-    major: u32,
-    capability_level: u32,
+pub struct BackupLogStructureVersion {
+    pub major: u32,
+    pub capability_level: u32,
 }
 
 /// A single progress sample recorded during a data transfer.
@@ -40,123 +40,70 @@ pub struct BackupLogSample {
     pub bytes_done: u64,
 }
 
-#[derive(Serialize, Clone)]
-struct BackupLogTransferWritable {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transfer_uuidv7:Option<String>,
-    card_path: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    card_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_media_overridden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    card_id_overridden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    medium_uuidv7: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    medium_uuidv7_overridden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device_location: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    device_location_overridden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input_path: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input_path_overridden: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transfer_samples: Option<Vec<BackupLogSample>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transfer_performed_by: Option<String>,
-    /// Byte count of the destination directory measured once after the transfer binary exited.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bytes_total_measured: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transfer_failed: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    failure_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_hostname: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-struct BackupLogEntryWritable {
-    data_type: String,
-    data_structure_version: BackupLogStructureVersion,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    previous_uuidv7: Option<String>,
-    current_uuidv7: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_uuidv7: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    comment: Option<String>,
-    completed_backup: bool,
-    new_transfers: Vec<BackupLogTransferWritable>,
-}
-
 #[derive(Deserialize)]
 struct BackupLogHeader {
     data_type: String,
     data_structure_version: BackupLogStructureVersion,
 }
 
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BackupLogTransfer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_uuidv7: Option<String>,
+    pub card_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_media_overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_id_overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium_uuidv7: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium_uuidv7_overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_location_overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_path_overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_samples: Option<Vec<BackupLogSample>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_performed_by: Option<String>,
+    /// Byte count of the destination directory measured once after the transfer binary exited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_total_measured: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_failed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_hostname: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BackupLogEntry {
-    #[serde(default)]
+    pub data_type: String,
+    pub data_structure_version: BackupLogStructureVersion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_uuidv7: Option<String>,
     pub current_uuidv7: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_uuidv7: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub completed_backup: bool,
     pub new_transfers: Vec<BackupLogTransfer>,
-}
-
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Deserialize)]
-pub struct BackupLogTransfer {
-    #[serde(default)]
-    pub transfer_uuidv7:Option<String>,
-    pub card_path: PathBuf,
-    #[serde(default)]
-    pub card_id: Option<String>,
-    #[serde(default)]
-    pub source_media_overridden: Option<bool>,
-    #[serde(default)]
-    pub card_id_overridden: Option<bool>,
-    #[serde(default)]
-    pub medium_uuidv7: Option<String>,
-    #[serde(default)]
-    pub medium_uuidv7_overridden: Option<bool>,
-    #[serde(default)]
-    pub device_location: Option<String>,
-    #[serde(default)]
-    pub device_location_overridden: Option<bool>,
-    #[serde(default)]
-    pub input_path: Option<PathBuf>,
-    #[serde(default)]
-    pub input_path_overridden: Option<bool>,
-    #[serde(default)]
-    pub transfer_samples: Option<Vec<BackupLogSample>>,
-    #[serde(default)]
-    pub transfer_performed_by: Option<String>,
-    /// Byte count of the destination directory measured once after the transfer binary exited.
-    #[serde(default)]
-    pub bytes_total_measured: Option<u64>,
-    #[serde(default)]
-    pub transfer_failed: Option<bool>,
-    #[serde(default)]
-    pub failure_message: Option<String>,
-    #[serde(default)]
-    pub system_hostname: Option<String>,
 }
 
 /// Thread-safe writer for a single backup log entry.
 /// All mutations flush the full entry atomically (write to a `.tmp` file then rename).
 pub struct BackupLogManager {
     log_dir: PathBuf,
-    entry: BackupLogEntryWritable,
+    entry: BackupLogEntry,
 }
 
 impl BackupLogManager {
@@ -170,7 +117,7 @@ impl BackupLogManager {
             set_next_uuidv7_on_entry(&log_dir, prev_uuid, &new_uuid)?;
         }
 
-        let entry = BackupLogEntryWritable {
+        let entry = BackupLogEntry {
             data_type: BACKUP_LOG_DATA_TYPE.to_owned(),
             data_structure_version: BackupLogStructureVersion {
                 major: BACKUP_LOG_STRUCTURE_MAJOR,
@@ -191,47 +138,7 @@ impl BackupLogManager {
 
     /// Constructs a manager from a previously-written entry that is still in progress.
     /// Does NOT write to disk — the on-disk file is left untouched until the first mutation.
-    pub fn from_existing(
-        log_dir: PathBuf,
-        current_uuidv7: String,
-        previous_uuidv7: Option<String>,
-        next_uuidv7: Option<String>,
-        comment: Option<String>,
-        existing_transfers: Vec<BackupLogTransfer>,
-    ) -> Self {
-        let entry = BackupLogEntryWritable {
-            data_type: BACKUP_LOG_DATA_TYPE.to_owned(),
-            data_structure_version: BackupLogStructureVersion {
-                major: BACKUP_LOG_STRUCTURE_MAJOR,
-                capability_level: BACKUP_LOG_CAPABILITY_LEVEL,
-            },
-            previous_uuidv7,
-            current_uuidv7,
-            next_uuidv7,
-            comment,
-            completed_backup: false,
-            new_transfers: existing_transfers.into_iter().map(|t| {
-                BackupLogTransferWritable {
-                    transfer_uuidv7:            t.transfer_uuidv7,
-                    card_path:                  t.card_path,
-                    card_id:                    t.card_id,
-                    source_media_overridden:    t.source_media_overridden,
-                    card_id_overridden:         t.card_id_overridden,
-                    medium_uuidv7:              t.medium_uuidv7,
-                    medium_uuidv7_overridden:   t.medium_uuidv7_overridden,
-                    device_location:            t.device_location,
-                    device_location_overridden: t.device_location_overridden,
-                    input_path:                 t.input_path,
-                    input_path_overridden:      t.input_path_overridden,
-                    transfer_samples:           t.transfer_samples,
-                    transfer_performed_by:      t.transfer_performed_by,
-                    bytes_total_measured:       t.bytes_total_measured,
-                    transfer_failed:            t.transfer_failed,
-                    failure_message:            t.failure_message,
-                    system_hostname:            t.system_hostname,
-                }
-            }).collect(),
-        };
+    pub fn from_existing(log_dir: PathBuf, entry: BackupLogEntry) -> Self {
         BackupLogManager { log_dir, entry }
     }
 
@@ -251,7 +158,7 @@ impl BackupLogManager {
         input_path_overridden: bool,
         system_hostname: Option<String>,
     ) -> Result<(), String> {
-        self.entry.new_transfers.push(BackupLogTransferWritable {
+        self.entry.new_transfers.push(BackupLogTransfer {
             transfer_uuidv7:            Some(transfer_uuidv7),
             card_path,
             card_id:                    Some(card_id),
@@ -304,11 +211,8 @@ impl BackupLogManager {
         self.flush()
     }
 
-
     fn flush(&self) -> Result<(), String> {
-
         let mut json = Vec::new();
-
         let formatter = PrettyFormatter::with_indent(b"\t");
         let mut serializer = serde_json::Serializer::with_formatter(&mut json, formatter);
 
