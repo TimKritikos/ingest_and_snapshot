@@ -17,7 +17,8 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-/// This module defines the protocol between the main application logic and any UI backend.
+//! This module defines the protocol between the main application logic and any UI backend.
+
 
 use std::path::PathBuf;
 use crossbeam_channel::{Receiver, Sender};

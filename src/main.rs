@@ -26,7 +26,6 @@ use std::env;
 use std::fs::File;
 use std::{thread, time};
 use std::sync::{Arc, Mutex};
-use crossbeam_channel;
 use clap::Parser;
 use home::home_dir;
 use anyhow::{Result};
@@ -192,7 +191,7 @@ struct Cli {
 }
 
 
-fn scan_source_media(media_dir: &PathBuf) -> Result<(Vec<SourceMediaEntry>, Vec<String>), String> {
+fn scan_source_media(media_dir: &Path) -> Result<(Vec<SourceMediaEntry>, Vec<String>), String> {
     let source_media_dir = media_dir.join(SOURCE_MEDIA_DIR_NAME);
 
     if !source_media_dir.exists() {
@@ -451,6 +450,7 @@ fn main() {
             if dc.data_structure_version.major != DEVICES_JSON_EXPECTED_MAJOR {
                 return Err(format!("{}: unsupported data_structure_version: major {} is not supported (expected {})",devices_path.display(), dc.data_structure_version.major, DEVICES_JSON_EXPECTED_MAJOR));
             }
+            #[allow(clippy::absurd_extreme_comparisons)]
             if dc.data_structure_version.capability_level < DEVICES_JSON_MIN_CAPABILITY_LEVEL {
                 return Err(format!("{}: unsupported data_structure_version: capability_level {} is below minimum {}",devices_path.display(), dc.data_structure_version.capability_level, DEVICES_JSON_MIN_CAPABILITY_LEVEL));
             }

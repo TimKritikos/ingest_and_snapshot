@@ -253,6 +253,7 @@ fn parse_backup_log_file(path: &PathBuf) -> Result<BackupLogEntry, String> {
             path.display(), header.data_structure_version.major, BACKUP_LOG_STRUCTURE_MAJOR
         ));
     }
+    #[allow(clippy::absurd_extreme_comparisons)]
     if header.data_structure_version.capability_level < BACKUP_LOG_CAPABILITY_LEVEL {
         return Err(format!(
             "{}: unsupported data_structure_version: capability_level {} is below minimum {}",
@@ -264,7 +265,7 @@ fn parse_backup_log_file(path: &PathBuf) -> Result<BackupLogEntry, String> {
         .map_err(|e| format!("{}: failed to parse entry: {}", path.display(), e))
 }
 
-pub fn load_backup_log(media_dir: &PathBuf) -> Result<BackupLogState, String> {
+pub fn load_backup_log(media_dir: &Path) -> Result<BackupLogState, String> {
     let log_dir = media_dir.join("metadata").join(BACKUP_LOG_DATA_DIR_NAME);
 
     if !log_dir.exists() {

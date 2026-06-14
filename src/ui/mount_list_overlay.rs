@@ -16,11 +16,13 @@ const NORMAL_TEXT_FG: Color   = Color::White;
 
 pub struct MountListState {
     pub selected: usize,
+    pub open: bool,
+    pub mounts: Vec<MountEntry>,
 }
 
 impl MountListState {
     pub fn new() -> Self {
-        Self { selected: 0 }
+        Self { selected: 0, open: false, mounts: Vec::new() }
     }
 }
 
@@ -30,17 +32,16 @@ pub enum MountListEvent {
 }
 
 /// Height the overlay needs for the given mount list (capped at max_height).
-pub fn required_height(mounts: &[MountEntry], max_height: u16) -> u16 {
+pub fn required_height(state: &MountListState, max_height: u16) -> u16 {
     // 1 emptry row + 1 separator + 1 title row + max(1, count) entry rows + 1 separator + 1 hint row + 1 more empty row = count + 6
     // (min 1 entry row to show the "empty" message)
-    let entry_rows = mounts.len().max(1) as u16;
+    let entry_rows = state.mounts.len().max(1) as u16;
     (entry_rows + 6).min(max_height)
 }
 
 pub fn handle_key(
     state: &mut MountListState,
     key: KeyEvent,
-    mounts: &[MountEntry],
 ) -> Option<MountListEvent> {
     match key.code {
         KeyCode::Esc => return Some(MountListEvent::Close),
@@ -51,12 +52,12 @@ pub fn handle_key(
             }
         }
         KeyCode::Down => {
-            if !mounts.is_empty() && state.selected + 1 < mounts.len() {
+            if !state.mounts.is_empty() && state.selected + 1 < state.mounts.len() {
                 state.selected += 1;
             }
         }
         KeyCode::Char('u') | KeyCode::Char('U') => {
-            if let Some(entry) = mounts.get(state.selected) {
+            if let Some(entry) = state.mounts.get(state.selected) {
                 return Some(MountListEvent::Unmount(entry.id));
             }
         }
@@ -65,7 +66,8 @@ pub fn handle_key(
     None
 }
 
-pub fn render(frame: &mut Frame, area: Rect, mounts: &[MountEntry], state: &MountListState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &MountListState) {
+    let mounts = &state.mounts;
     if area.height < 3 { return; }
 
     // ── Background fill ───────────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ pub fn render(frame: &mut Frame, area: Rect, mounts: &[MountEntry], state: &Moun
 
     // ── Title row ─────────────────────────────────────────────────────────────────
     let title_style = Style::default().fg(TITLE_FG).bg(OVERLAY_BG).add_modifier(Modifier::BOLD);
-    let title_text  = format!("    status                    mountpoint                        filesystem      Device                  by-id");
+    let title_text  = "    status                    mountpoint                        filesystem      Device                  by-id".to_string();
     {
         let buf = frame.buffer_mut();
         buf.set_string(area.x, area.y + 2, &title_text, title_style);

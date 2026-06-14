@@ -249,7 +249,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
     // from these same averaged values — not from raw interval peaks — so that the tallest column
     // always reaches the top row after normalization.
     let mut final_speeds = vec![0u64; total_braille_cols];
-    for bc in 0..progress_dot_width {
+    for (bc, bucket_speed) in final_speeds.iter_mut().enumerate().take(progress_dot_width) {
 
         // Calculate the byte (and by extension precentage) range this dot represents.
         let byte_from = bc as u64 * bytes_total / total_braille_cols as u64;
@@ -266,7 +266,7 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
         }
 
         // Nearest-neighbor fallback when no interval falls in this bucket
-        final_speeds[bc] = if sample_count > 0 {
+        *bucket_speed = if sample_count > 0 {
             speed_sum / sample_count as u64
         } else {
             let byte_mid  = byte_from / 2 + byte_to / 2;

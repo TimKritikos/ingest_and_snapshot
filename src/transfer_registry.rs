@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use crossbeam_channel;
 
 const CARD_PREFIX: &str = "CARD";
 const CARD_NUMBER_WIDTH: usize = 4;

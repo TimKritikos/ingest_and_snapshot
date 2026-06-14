@@ -12,6 +12,7 @@ use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate,
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 
 pub struct QueryWindowState {
+    pub query_queue: VecDeque<UserQuery>,
     pub device_picker_open: bool,
     pub device_picker_selection: usize,
     pub device_override: Option<SourceMediaEntry>,
@@ -34,6 +35,7 @@ pub struct QueryWindowState {
 impl QueryWindowState {
     pub fn new() -> Self {
         Self {
+            query_queue: VecDeque::new(),
             device_picker_open: false,
             device_picker_selection: 0,
             device_override: None,
@@ -59,8 +61,8 @@ fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
         && data.input_path.value().is_some()
 }
 
-pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut VecDeque<UserQuery>, available_devices: Option<&[SourceMediaEntry]>) {
-    match query_queue.front() {
+pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices: Option<&[SourceMediaEntry]>) {
+    match state.query_queue.front() {
         Some(UserQuery::ApproveTransfer(query)) => {
             if let Some(entry) = &mut state.card_id_entry {
                 match entry.handle_key(key.code) {
@@ -207,12 +209,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
                         state.card_id_entry = Some(TextEntryState::new(query.initial_data.card_id.value().cloned().unwrap_or_default()));
                     }
                     KeyCode::Enter if can_approve(&query.initial_data) => {
-                        if let Some(UserQuery::ApproveTransfer(query)) = query_queue.pop_front() {
+                        if let Some(UserQuery::ApproveTransfer(query)) = state.query_queue.pop_front() {
                             let _ = query.response_tx.send(ApproveTransferResponse::Approved);
                         }
                     }
                     KeyCode::Esc => {
-                        if let Some(UserQuery::ApproveTransfer(query)) = query_queue.pop_front() {
+                        if let Some(UserQuery::ApproveTransfer(query)) = state.query_queue.pop_front() {
                             let _ = query.response_tx.send(ApproveTransferResponse::Denied);
                         }
                     }
@@ -223,22 +225,22 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::UnknownDevice(_)) => {
             match key.code {
                 KeyCode::Char('1') => {
-                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::UnknownDevice(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(UnknownDeviceResponse::AddToAllowList);
                     }
                 }
                 KeyCode::Char('2') => {
-                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::UnknownDevice(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(UnknownDeviceResponse::AddToIgnoreList);
                     }
                 }
                 KeyCode::Char('3') => {
-                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::UnknownDevice(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(UnknownDeviceResponse::AllowOnce);
                     }
                 }
                 KeyCode::Esc => {
-                    if let Some(UserQuery::UnknownDevice(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::UnknownDevice(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(UnknownDeviceResponse::Ignore);
                     }
                 }
@@ -248,7 +250,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::FatalError(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Esc => {
-                    if let Some(UserQuery::FatalError(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::FatalError(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(());
                     }
                 }
@@ -258,7 +260,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::SourceMediaWarnings(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Esc => {
-                    if let Some(UserQuery::SourceMediaWarnings(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::SourceMediaWarnings(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(());
                     }
                 }
@@ -270,17 +272,17 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
             let can_use_original = !matches!(query.conflict_reason, CardIdConflictReason::IdTaken);
             match key.code {
                 KeyCode::Char('n') | KeyCode::Char('N') if can_use_new => {
-                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::ConfirmCardId(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(ConfirmCardIdResponse::UseNew);
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Char('K') if can_use_original => {
-                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::ConfirmCardId(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(ConfirmCardIdResponse::UseOriginal);
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => {
-                    if let Some(UserQuery::ConfirmCardId(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::ConfirmCardId(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(ConfirmCardIdResponse::BackToQuery);
                     }
                 }
@@ -290,12 +292,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::NoSourceMediaWarning(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
-                    if let Some(UserQuery::NoSourceMediaWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoSourceMediaWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoSourceMediaWarningResponse::BackToQuery);
                     }
                 }
                 KeyCode::Esc => {
-                    if let Some(UserQuery::NoSourceMediaWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoSourceMediaWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoSourceMediaWarningResponse::Cancel);
                     }
                 }
@@ -305,12 +307,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::NoDeviceLocationWarning(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
-                    if let Some(UserQuery::NoDeviceLocationWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoDeviceLocationWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoDeviceLocationWarningResponse::BackToQuery);
                     }
                 }
                 KeyCode::Esc => {
-                    if let Some(UserQuery::NoDeviceLocationWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoDeviceLocationWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoDeviceLocationWarningResponse::Cancel);
                     }
                 }
@@ -320,12 +322,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::NoInputPathWarning(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
-                    if let Some(UserQuery::NoInputPathWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoInputPathWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoInputPathWarningResponse::BackToQuery);
                     }
                 }
                 KeyCode::Esc => {
-                    if let Some(UserQuery::NoInputPathWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NoInputPathWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NoInputPathWarningResponse::Cancel);
                     }
                 }
@@ -335,12 +337,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::NewBackupLog(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(UserQuery::NewBackupLog(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NewBackupLog(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NewBackupLogResponse::CreateNew);
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    if let Some(UserQuery::NewBackupLog(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::NewBackupLog(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(NewBackupLogResponse::Quit);
                     }
                 }
@@ -350,12 +352,12 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
         Some(UserQuery::CardIdInLogWarning(_)) => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('b') | KeyCode::Char('B') => {
-                    if let Some(UserQuery::CardIdInLogWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::CardIdInLogWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(CardIdInLogWarningResponse::BackToQuery);
                     }
                 }
                 KeyCode::Esc => {
-                    if let Some(UserQuery::CardIdInLogWarning(query)) = query_queue.pop_front() {
+                    if let Some(UserQuery::CardIdInLogWarning(query)) = state.query_queue.pop_front() {
                         let _ = query.response_tx.send(CardIdInLogWarningResponse::Cancel);
                     }
                 }
@@ -370,11 +372,11 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, query_queue: &mut
 pub fn render(
     frame: &mut Frame,
     area: Rect,
-    query: &UserQuery,
-    queued_count: usize,
     state: &QueryWindowState,
     available_devices: Option<&[SourceMediaEntry]>,
 ) {
+    let query = state.query_queue.front().expect("render called with empty query queue");
+    let queued_count = state.query_queue.len() - 1;
     let title = if queued_count > 0 {
         format!("User query  [{} more queued]", queued_count)
     } else {
@@ -519,12 +521,12 @@ fn load_dir_entries(actual_dir: &Path, mount_root: Option<&Path>) -> Vec<(String
     if let Ok(read_dir) = std::fs::read_dir(actual_dir) {
         let mut children: Vec<(String, PathBuf, bool)> = read_dir
             .flatten()
-            .filter_map(|entry| {
+            .map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let path = entry.path();
                 let is_dir = path.is_dir();
                 let label = if is_dir { format!("{}/", name) } else { name };
-                Some((label, path, is_dir))
+                (label, path, is_dir)
             })
             .collect();
         children.sort_by(|a, b| {
@@ -1001,6 +1003,8 @@ fn render_source_media_warnings(frame: &mut Frame, area: Rect, query: &SourceMed
         let half_width =  1.0_f32; // Half of the width of the icon
 
         let icon_y_percentage = (y - top_y) / (bottom_y - top_y);
+
+        #[allow(clippy::manual_range_contains)]
         if icon_y_percentage < 0.0 || icon_y_percentage > 1.0 {
             return false;
         }

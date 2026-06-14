@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use crossbeam_channel;
 use crate::ui_api::{self, UiBackend};
 use crate::SourceMediaEntry;
 use crate::CardNamingScheme;
@@ -32,6 +31,7 @@ pub struct DetectedTransferInfo {
     pub real_device_path: Option<PathBuf>,     // resolved device node for mounting (e.g. /dev/sdb1)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
@@ -48,6 +48,7 @@ pub fn spawn_transfer(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_transfer(
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     registry: Arc<Mutex<PendingTransferRegistry>>,
@@ -175,7 +176,6 @@ fn run_transfer(
         } else {
             query_update_from_state(
                 &current_source_media_dir,
-                &all_source_media,
                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                 &current_card_id,
                 current_device_overridden,
@@ -304,7 +304,6 @@ fn run_transfer(
                             current_storage_device_overridden = true;
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
-                                &all_source_media,
                                 &display_name,
                                 &current_card_id,
                                 current_device_overridden,
@@ -320,7 +319,6 @@ fn run_transfer(
                             current_storage_device_overridden = false;
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
-                                &all_source_media,
                                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                 &current_card_id,
                                 current_device_overridden,
@@ -337,7 +335,6 @@ fn run_transfer(
                             input_path_state.virtual_path = Some(new_virtual_path);
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
-                                &all_source_media,
                                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                 &current_card_id,
                                 current_device_overridden,
@@ -397,7 +394,6 @@ fn run_transfer(
                             current_device_location_overridden = true;
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
-                                &all_source_media,
                                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                 &current_card_id,
                                 current_device_overridden,
@@ -454,7 +450,6 @@ fn run_transfer(
                             }
                             let _ = update_tx.send(query_update_from_state(
                                 &current_source_media_dir,
-                                &all_source_media,
                                 &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                 &current_card_id,
                                 current_device_overridden,
@@ -482,7 +477,6 @@ fn run_transfer(
                         input_path_state.mount_root = Some(mountpoint);
                         let _ = update_tx.send(query_update_from_state(
                             &current_source_media_dir,
-                            &all_source_media,
                             &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                             &current_card_id,
                             current_device_overridden,
@@ -514,7 +508,6 @@ fn run_transfer(
                                     ).expect("update_id: transfer must be registered before updating");
                                     let _ = update_tx.send(query_update_from_state(
                                         &current_source_media_dir,
-                                        &all_source_media,
                                         &storage_device_display_name(current_source_device_id.as_deref(), &all_storage_devices),
                                         &new_id,
                                         current_device_overridden,
@@ -1025,7 +1018,6 @@ fn handle_device_overwrite(
     // Update the user query in the UI
     let _ = update_tx.send(query_update_from_state(
         &Some(new_dir),
-        all_source_media,
         source_device,
         &new_card_id,
         device_overridden,
@@ -1098,7 +1090,6 @@ fn handle_card_id_changed(
     let current_source_media: Option<PathBuf> = source_dir.map(|d| d.to_owned());
     let _ = update_tx.send(query_update_from_state(
         &current_source_media,
-        all_source_media,
         source_device,
         &final_id,
         device_overridden,
@@ -1119,7 +1110,6 @@ fn source_media_scheme(dir: &std::path::Path, all_source_media: &[SourceMediaEnt
 
 fn query_update_from_state(
     source_media_dir: &Option<PathBuf>,
-    _all_source_media: &[SourceMediaEntry],
     source_device: &str,
     card_id: &str,
     device_overridden: bool,
