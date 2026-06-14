@@ -70,8 +70,6 @@ pub struct BackupLogTransfer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_path_overridden: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transfer_samples: Option<Vec<BackupLogSample>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_performed_by: Option<String>,
     /// Byte count of the destination directory measured once after the transfer binary exited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +80,8 @@ pub struct BackupLogTransfer {
     pub failure_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_samples: Option<Vec<BackupLogSample>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -310,13 +310,20 @@ fn set_next_uuidv7_on_entry(log_dir: &Path, entry_uuid: &str, next_uuid: &str) -
     let file_path = log_dir.join(format!("{}.json", entry_uuid));
     let content   = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
-    let mut value: serde_json::Value = serde_json::from_str(&content)
+
+    let mut json_data: BackupLogEntry = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", file_path.display(), e))?;
-    value["next_uuidv7"] = serde_json::Value::String(next_uuid.to_owned());
-    let updated_content = serde_json::to_string(&value)
-        .map_err(|e| format!("Failed to re-serialize {}: {}", file_path.display(), e))?;
+
+    json_data.next_uuidv7 = Some(next_uuid.to_owned());
+
+    let mut json_serialized = Vec::new();
+    let formatter = PrettyFormatter::with_indent(b"\t");
+    let mut serializer = serde_json::Serializer::with_formatter(&mut json_serialized, formatter);
+    json_data.serialize(&mut serializer)
+        .map_err(|e| format!("Failed to re-serialize backup log entry: {}: {}",file_path.display(), e))?;
+
     let tmp_path = log_dir.join(format!("{}.json.tmp", entry_uuid));
-    std::fs::write(&tmp_path, updated_content.as_bytes())
+    std::fs::write(&tmp_path, json_serialized)
         .map_err(|e| format!("Failed to write {}: {}", tmp_path.display(), e))?;
     std::fs::rename(&tmp_path, &file_path)
         .map_err(|e| format!("Failed to finalize {}: {}", file_path.display(), e))?;
