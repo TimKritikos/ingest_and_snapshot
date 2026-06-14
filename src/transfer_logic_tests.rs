@@ -19,6 +19,7 @@ mod tests {
         fn set_available_devices(&mut self, _: Vec<SourceMediaEntry>) -> Result<(), UiError> { Ok(()) }
         fn new_transfer(&mut self, _: Option<String>, _: crossbeam_channel::Receiver<ui_api::TransferEvent>) -> Result<(), UiError> { Ok(()) }
         fn mount_update(&mut self, _: ui_api::MountUpdate) -> Result<(), UiError> { Ok(()) }
+        fn system_info(&mut self, _: ui_api::SystemInfo) -> Result<(), UiError> { Ok(()) }
         fn quit(&mut self) -> Result<(), UiError> { Ok(()) }
         fn join(self: Box<Self>) {}
 
@@ -60,7 +61,7 @@ mod tests {
             "019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned(),
             std::path::PathBuf::from("source_media/test_cam/DATA/CARD0000"),
             "CARD0000".to_owned(),
-            false, false, None, false, None, false, None, false,
+            false, false, None, false, None, false, None, false, None,
         ).unwrap();
         let backup_log_manager = Arc::new(Mutex::new(log_manager));
 

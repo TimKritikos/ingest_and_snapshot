@@ -4,22 +4,15 @@ use ratatui::style::{Color, Style, Modifier};
 use ratatui::widgets::Paragraph;
 use ratatui::prelude::Stylize;
 use ratatui::text::{Span, Line};
-use sysinfo::System;
 use time_format::now;
-
-const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
+use crate::ui_api::SystemInfo;
 
 const MOUNT_WIDGET_BG: Color = Color::Rgb(220, 110, 0);
 const MOUNT_WIDGET_FG: Color = Color::Black;
 
-pub fn render(frame: &mut Frame, area: Rect, sys: &System, mount_count: usize, #[cfg(feature = "fps-counter")] fps: f64) {
+pub fn render(frame: &mut Frame, area: Rect, system_info: Option<&SystemInfo>, mount_count: usize, #[cfg(feature = "fps-counter")] fps: f64) {
     let current_time = now().unwrap();
     let timestamp = time_format::strftime_utc("%a, %d %b %Y %T %Z", current_time).unwrap();
-
-    let zfs_version = match std::fs::read_to_string(ZFS_VERSION_FILE) {
-        Ok(version) => version,
-        Err(_e) => "unavailable".to_string(),
-    };
 
     let key_style = Style::default().fg(Color::White).bg(Color::Black);
     let value_style = Style::default().fg(Color::Cyan).bg(Color::Black);
@@ -31,11 +24,23 @@ pub fn render(frame: &mut Frame, area: Rect, sys: &System, mount_count: usize, #
             #[cfg(feature = "fps-counter")]
             Span::styled(format!("{:.1}   ", fps), value_style),
             Span::styled("RAM:", key_style),
-            Span::styled(format!("{:.1}/{:.1} GiB",(sys.used_memory() as f64) / (1024.0 * 1024.0 * 1024.0), (sys.total_memory() as f64) / (1024.0 * 1024.0 * 1024.0)), value_style),
+            Span::styled(
+                system_info.map(|i| format!("{:.1}/{:.1} GiB",
+                    i.ram_used_bytes  as f64 / (1024.0 * 1024.0 * 1024.0),
+                    i.ram_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                )).unwrap_or_else(|| "-.--/-.-- GiB".to_owned()),
+                value_style,
+            ),
             Span::styled("   NAME:", key_style),
-            Span::styled(System::host_name().unwrap(), value_style),
+            Span::styled(
+                system_info.map(|i| i.hostname.clone()).unwrap_or_else(|| "...".to_owned()),
+                value_style,
+            ),
             Span::styled("   ZFS:", key_style),
-            Span::styled(zfs_version, value_style),
+            Span::styled(
+                system_info.map(|i| i.zfs_version.clone()).unwrap_or_else(|| "...".to_owned()),
+                value_style,
+            ),
             Span::styled("   ", key_style),
         ]
     ).right_aligned();

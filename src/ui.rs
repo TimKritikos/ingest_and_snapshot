@@ -3,7 +3,6 @@ use std::thread::JoinHandle;
 use std::thread;
 use crossbeam_channel::{self, Receiver, Sender};
 use ratatui::DefaultTerminal;
-use sysinfo::System;
 use ratatui::Frame;
 use ratatui::layout::{Layout, Direction, Constraint};
 use ratatui::style::{Color, Style};
@@ -23,7 +22,7 @@ mod mount_list_overlay;
 use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
 use crate::ui_api::{
     TransferSample, TransferEvent, UserQuery, UiToLogicMessage, UiError,
-    MountEntry, MountEntryStatus, MountUpdate, LoadingField,
+    MountEntry, MountEntryStatus, MountUpdate, LoadingField, SystemInfo,
 };
 use crate::ui_api::UiBackend;
 
@@ -48,6 +47,7 @@ enum LogicToUiMessage {
     NewTransfer { source_media_dir: Option<String>, rx_control: Receiver<TransferEvent> },
     UserQuery { query: UserQuery, priority: bool },
     MountUpdate(MountUpdate),
+    SystemInfo(SystemInfo),
     Quit,
 }
 
@@ -84,6 +84,9 @@ impl UiBackend for TuiBackend {
     fn mount_update(&mut self, update: crate::ui_api::MountUpdate) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::MountUpdate(update)).map_err(|_| UiError::Disconnected)
     }
+    fn system_info(&mut self, info: SystemInfo) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::SystemInfo(info)).map_err(|_| UiError::Disconnected)
+    }
     fn quit(&mut self) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::Quit).map_err(|_| UiError::Disconnected)
     }
@@ -107,7 +110,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut frame_times: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     #[cfg(feature = "fps-counter")]
     const FPS_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
-    let mut sys = System::new();
+    let mut current_system_info: Option<SystemInfo> = None;
 
     loop {
         // Process events on each transfer's control channel
@@ -150,8 +153,6 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
             }
         }
 
-        sys.refresh_memory();
-
         #[cfg(feature = "fps-counter")]
         let fps = {
             let now = std::time::Instant::now();
@@ -163,7 +164,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         };
 
         terminal.draw(|frame| {
-            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref(), &sys, &mounts, mount_list_open, &mount_list_state,
+            render(frame, &actions_state, &query_queue, &query_state, &transfers, available_devices.as_deref(), current_system_info.as_ref(), &mounts, mount_list_open, &mount_list_state,
                 #[cfg(feature = "fps-counter")] fps,
             )
         })?;
@@ -196,6 +197,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                     } else {
                         query_queue.push_back(q);
                     }
+                }
+                LogicToUiMessage::SystemInfo(info) => {
+                    current_system_info = Some(info);
                 }
                 LogicToUiMessage::MountUpdate(update) => {
                     match update {
@@ -296,7 +300,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>, sys: &System, mounts: &[MountEntry], mount_list_open: bool, mount_list_state: &mount_list_overlay::MountListState, #[cfg(feature = "fps-counter")] fps: f64) {
+fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &VecDeque<UserQuery>, query_state: &user_queries_window::QueryWindowState, transfers: &[Transfer], available_devices: Option<&[SourceMediaEntry]>, system_info: Option<&SystemInfo>, mounts: &[MountEntry], mount_list_open: bool, mount_list_state: &mount_list_overlay::MountListState, #[cfg(feature = "fps-counter")] fps: f64) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
     frame.render_widget(bg, frame.area());
 
@@ -334,7 +338,7 @@ fn render(frame: &mut Frame, actions_state: &ActionsWindowState, query_queue: &V
         .split(layout[1]);
 
     // Status bar
-    status_bar::render(frame, layout[0], sys, mounts.iter().count(), #[cfg(feature = "fps-counter")] fps);
+    status_bar::render(frame, layout[0], system_info, mounts.iter().count(), #[cfg(feature = "fps-counter")] fps);
 
     // Windows
     let mut window_index = 0;

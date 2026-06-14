@@ -35,6 +35,7 @@ use nix::sys::statvfs::FsFlags;
 use serde::{Deserialize, Serialize};
 use udev::{Enumerator, MonitorBuilder};
 use std::ffi::OsStr;
+use sysinfo::System;
 
 mod ui;
 mod ui_api;
@@ -752,8 +753,32 @@ fn main() {
         }
     }
 
+    const ZFS_VERSION_FILE: &str = "/sys/module/zfs/version";
+    const SYSTEM_INFO_INTERVAL: time::Duration = time::Duration::from_millis(500);
+    const LOOP_SLEEP: time::Duration = time::Duration::from_millis(50);
+
+    let mut sys = System::new();
+    let system_hostname = System::host_name().unwrap_or_else(|| "unknown".to_owned());
+    let mut last_system_info_sent = time::Instant::now()
+        .checked_sub(SYSTEM_INFO_INTERVAL)
+        .unwrap_or_else(time::Instant::now);
+
     'outer: loop {
-        thread::sleep(time::Duration::from_millis(50));
+        thread::sleep(LOOP_SLEEP);
+
+        if last_system_info_sent.elapsed() >= SYSTEM_INFO_INTERVAL {
+            sys.refresh_memory();
+            let zfs_version = std::fs::read_to_string(ZFS_VERSION_FILE)
+                .unwrap_or_else(|_| "unavailable".to_owned());
+            let _ = ui.lock().unwrap().system_info(ui_api::SystemInfo {
+                ram_used_bytes:  sys.used_memory(),
+                ram_total_bytes: sys.total_memory(),
+                hostname:        system_hostname.clone(),
+                zfs_version,
+            });
+            last_system_info_sent = time::Instant::now();
+        }
+
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {

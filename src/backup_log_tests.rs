@@ -112,6 +112,7 @@ mod tests {
                 bytes_total_measured:       Some(2048),
                 transfer_failed:            Some(true),
                 failure_message:            Some("test failure".to_owned()),
+                system_hostname:            Some("test-host".to_owned()),
             }],
         }
     }

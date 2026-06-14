@@ -74,6 +74,8 @@ struct BackupLogTransferWritable {
     transfer_failed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_hostname: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -146,6 +148,8 @@ pub struct BackupLogTransfer {
     pub transfer_failed: Option<bool>,
     #[serde(default)]
     pub failure_message: Option<String>,
+    #[serde(default)]
+    pub system_hostname: Option<String>,
 }
 
 /// Thread-safe writer for a single backup log entry.
@@ -224,6 +228,7 @@ impl BackupLogManager {
                     bytes_total_measured:       t.bytes_total_measured,
                     transfer_failed:            t.transfer_failed,
                     failure_message:            t.failure_message,
+                    system_hostname:            t.system_hostname,
                 }
             }).collect(),
         };
@@ -244,6 +249,7 @@ impl BackupLogManager {
         device_location_overridden: bool,
         input_path: Option<PathBuf>,
         input_path_overridden: bool,
+        system_hostname: Option<String>,
     ) -> Result<(), String> {
         self.entry.new_transfers.push(BackupLogTransferWritable {
             transfer_uuidv7:            Some(transfer_uuidv7),
@@ -262,6 +268,7 @@ impl BackupLogManager {
             bytes_total_measured:       None,
             transfer_failed:            None,
             failure_message:            None,
+            system_hostname,
         });
         self.flush()
     }

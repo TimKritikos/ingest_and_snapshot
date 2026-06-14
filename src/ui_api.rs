@@ -270,6 +270,13 @@ pub enum MountUpdate {
     UnmountFailed { id: MountId, reason: String },
 }
 
+pub struct SystemInfo {
+    pub ram_used_bytes: u64,
+    pub ram_total_bytes: u64,
+    pub hostname: String,
+    pub zfs_version: String,
+}
+
 /// The interface through which the main logic communicates with any UI backend.
 pub trait UiBackend: Send {
     fn add_config(&mut self, allow: Vec<String>, ignore: Vec<String>) -> Result<(), UiError>;
@@ -277,6 +284,7 @@ pub trait UiBackend: Send {
     fn new_transfer(&mut self, source_media_dir: Option<String>, rx_control: Receiver<TransferEvent>) -> Result<(), UiError>;
     fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError>;
     fn mount_update(&mut self, update: MountUpdate) -> Result<(), UiError>;
+    fn system_info(&mut self, info: SystemInfo) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().
     fn join(self: Box<Self>);

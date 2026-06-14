@@ -872,6 +872,7 @@ fn run_transfer(
         current_device_location_overridden,
         input_path_state.virtual_path.clone(),
         input_path_state.is_overridden,
+        sysinfo::System::host_name(),
     ) {
         show_transfer_error(&ui, &transfer_event_tx, format!("Failed to update backup log: {}", e));
         return;
