@@ -389,7 +389,7 @@ fn main() {
         Some(file) => file,
         None => {
             let home = home_dir().expect("Could not determine home directory");
-            home.join(per_device_config::CONFIG_FILE_NAME)
+            home.join("ingest_and_snapshot_config.json")
         }
     };
 
