@@ -136,36 +136,25 @@ impl PendingTransferRegistry {
 
         let entry = self.entries.get(source_media_dir);
 
-        // Auto transfers (and the filesystem) define the sequential ceiling.
-        let auto_registry_max: Option<u32> = entry.and_then(|e| {
+        // All pending transfers with a known slot are obstacles: skip over them rather
+        // than using them to raise the ceiling. Only the filesystem defines the floor,
+        // which prevents two concurrent auto transfers from ping-ponging each other's IDs.
+        let taken: HashSet<u32> = entry.map(|e| {
             e.transfers.iter()
                 .filter(|&(&id, _)| id != exclude_transfer)
                 .filter_map(|(_, card_id)| match card_id {
                     PendingCardId::Auto(id) => parse_card_number(id),
-                    PendingCardId::Manual { .. } => None,
-                })
-                .max()
-        });
-
-        // Manual transfers that conform to the scheme are obstacles: the auto system must
-        // skip over them rather than using them to raise its ceiling.
-        let manual_reserved: HashSet<u32> = entry.map(|e| {
-            e.transfers.iter()
-                .filter(|&(&id, _)| id != exclude_transfer)
-                .filter_map(|(_, card_id)| match card_id {
                     PendingCardId::Manual { scheme_number: Some(n), .. } => Some(*n),
                     _ => None,
                 })
                 .collect()
         }).unwrap_or_default();
 
-        let base = [fs_max, auto_registry_max].into_iter().flatten().max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+        let base = fs_max.map(|m| m + 1).unwrap_or(0);
 
-        // Find the first slot >= base not already reserved by a manual transfer.
+        // Find the first slot >= base not already occupied by another pending transfer.
         let mut next = base;
-        while manual_reserved.contains(&next) {
+        while taken.contains(&next) {
             next += 1;
         }
         format_card_id(next)

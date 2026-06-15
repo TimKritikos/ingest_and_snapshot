@@ -391,7 +391,7 @@ fn test_next_card_id_with_pending_auto_transfer() {
     let other_id    = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(other_id, temp.path(), PendingCardId::Auto("CARD0003".to_string()));
-    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0000");
 }
 
 #[test]
@@ -408,7 +408,10 @@ fn test_next_card_id_excludes_the_querying_transfer() {
 }
 
 #[test]
-fn test_next_card_id_takes_max_of_filesystem_and_registry() {
+fn test_next_card_id_pending_auto_is_obstacle_not_ceiling() {
+    // Filesystem has CARD0003, another pending auto has CARD0005.
+    // The floor comes from the filesystem (CARD0004), not from the pending auto.
+    // CARD0004 is free, so that is the result — the pending auto does not push it to CARD0006.
     let temp = tempfile::tempdir().unwrap();
     let data_dir = temp.path().join(DATA_SUBDIRECTORY);
     std::fs::create_dir(&data_dir).unwrap();
@@ -417,7 +420,7 @@ fn test_next_card_id_takes_max_of_filesystem_and_registry() {
     let other_id    = registry.new_transfer_internal_id();
     let querying_id = registry.new_transfer_internal_id();
     registry.register(other_id, temp.path(), PendingCardId::Auto("CARD0005".to_string()));
-    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0006");
+    assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
 }
 
 #[test]
@@ -503,6 +506,25 @@ fn test_next_card_does_not_count_manual_transfers() {
         scheme_number: Some(6),
     });
     assert_eq!(registry.next_card_id(temp.path(), querying_id).unwrap(), "CARD0004");
+}
+
+#[test]
+fn test_two_concurrent_auto_transfers_have_stable_ids() {
+    // Regression test: with two auto transfers registered for the same dir, each
+    // transfer re-querying its own next ID must get back its current ID unchanged.
+    // The old algorithm used max(other_auto_ids)+1 as a floor, so T1=CARD0000 would
+    // see T2=CARD0001 and compute CARD0002 — triggering a false sequence conflict on
+    // every approval and driving IDs up until numeric exhaustion (>9999).
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(DATA_SUBDIRECTORY)).unwrap();
+    let mut registry = PendingTransferRegistry::new();
+    let id1 = registry.new_transfer_internal_id();
+    let id2 = registry.new_transfer_internal_id();
+    registry.register(id1, temp.path(), PendingCardId::Auto("CARD0000".to_string()));
+    registry.register(id2, temp.path(), PendingCardId::Auto("CARD0001".to_string()));
+
+    assert_eq!(registry.next_card_id(temp.path(), id1).unwrap(), "CARD0000");
+    assert_eq!(registry.next_card_id(temp.path(), id2).unwrap(), "CARD0001");
 }
 
 #[test]
