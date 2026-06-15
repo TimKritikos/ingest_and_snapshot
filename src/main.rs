@@ -42,6 +42,7 @@ mod transfer_logic;
 mod transfer_registry;
 mod mount_manager;
 mod backup_log;
+mod per_device_config;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -280,7 +281,9 @@ fn scan_source_media(media_dir: &Path) -> Result<(Vec<SourceMediaEntry>, Vec<Str
             device_model_name_pretty: config.source_media_info.device_model_name_pretty,
             serial_number:            config.source_media_info.device_unique_identification.serial_number,
             new_card_naming_scheme:   config.source_media_info.new_card_naming_scheme,
-            directory:                subdir.path(),
+            directory:                subdir.path().strip_prefix(media_dir)
+                                          .map(|p| p.to_path_buf())
+                                          .unwrap_or_else(|_| subdir.path()),
         });
     }
 
@@ -386,7 +389,7 @@ fn main() {
         Some(file) => file,
         None => {
             let home = home_dir().expect("Could not determine home directory");
-            home.join("ingest_and_snapshot_config.json")
+            home.join(per_device_config::CONFIG_FILE_NAME)
         }
     };
 
@@ -542,7 +545,7 @@ fn main() {
             for transfer in &entry.new_transfers {
                 let source_media_dir = source_media_entries
                     .iter()
-                    .find(|sme| media_dir.join(&transfer.card_path).starts_with(&sme.directory))
+                    .find(|sme| media_dir.join(&transfer.card_path).starts_with(media_dir.join(&sme.directory)))
                     .map(|sme| sme.directory.to_string_lossy().into_owned()); //TODO: report to the user if it didn't get found
 
                 let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
@@ -607,6 +610,15 @@ fn main() {
         }
     };
 
+    let spawn_deps = std::sync::Arc::new(mount_manager::SpawnDeps {
+        ui: Arc::clone(&ui),
+        registry: Arc::clone(&registry),
+        all_source_media: source_media_entries.clone(),
+        all_storage_devices: storage_devices.clone(),
+        backup_log_manager: Arc::clone(&backup_log_manager),
+        media_dir: media_dir.clone(),
+    });
+
     let mut transfer_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     let monitor = MonitorBuilder::new()
@@ -652,23 +664,7 @@ fn main() {
             }
         }
         for (real_path, by_id_name, _) in startup_allowed {
-            transfer_handles.push(transfer_logic::spawn_transfer(
-                Arc::clone(&ui),
-                Arc::clone(&registry),
-                Arc::clone(&mount_manager),
-                source_media_entries.clone(),
-                storage_devices.clone(),
-                allowed_connected_devices.clone(),
-                transfer_logic::DetectedTransferInfo {
-                    source_media:      None,
-                    card_id:           None,
-                    source_device:     None,
-                    device_location:   Some(by_id_name),
-                    real_device_path:  Some(real_path),
-                },
-                Arc::clone(&backup_log_manager),
-                media_dir.clone(),
-            ));
+            crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
         }
 
         for (real_path, by_id_name, syspath) in startup_unknown {
@@ -692,23 +688,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    transfer_handles.push(transfer_logic::spawn_transfer(
-                        Arc::clone(&ui),
-                        Arc::clone(&registry),
-                        Arc::clone(&mount_manager),
-                        source_media_entries.clone(),
-                        storage_devices.clone(),
-                        allowed_connected_devices.clone(),
-                        transfer_logic::DetectedTransferInfo {
-                            source_media:     None,
-                            card_id:          None,
-                            source_device:    None,
-                            device_location:  Some(by_id_name),
-                            real_device_path: Some(real_path),
-                        },
-                        Arc::clone(&backup_log_manager),
-                        media_dir.clone(),
-                    ));
+                    crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
                 }
                 ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                     ignore_device_list.push(by_id_name.clone());
@@ -723,23 +703,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    transfer_handles.push(transfer_logic::spawn_transfer(
-                        Arc::clone(&ui),
-                        Arc::clone(&registry),
-                        Arc::clone(&mount_manager),
-                        source_media_entries.clone(),
-                        storage_devices.clone(),
-                        allowed_connected_devices.clone(),
-                        transfer_logic::DetectedTransferInfo {
-                            source_media:     None,
-                            card_id:          None,
-                            source_device:    None,
-                            device_location:  Some(by_id_name),
-                            real_device_path: Some(real_path),
-                        },
-                        Arc::clone(&backup_log_manager),
-                        media_dir.clone(),
-                    ));
+                    crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
                 }
                 ui_api::UnknownDeviceResponse::Ignore => {}
             }
@@ -799,13 +763,13 @@ fn main() {
                         Arc::clone(&mount_manager),
                         source_media_entries.clone(),
                         storage_devices.clone(),
-                        allowed_connected_devices.clone(),
                         transfer_logic::DetectedTransferInfo {
                             source_media:     None,
                             card_id:          None,
                             source_device:    None,
                             device_location:  None,
                             real_device_path: None,
+                            input_path:       None,
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),
@@ -832,23 +796,7 @@ fn main() {
                         }
                         syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
                         syspath_to_real_path.insert(syspath, real_path.clone());
-                        transfer_handles.push(transfer_logic::spawn_transfer(
-                            Arc::clone(&ui),
-                            Arc::clone(&registry),
-                            Arc::clone(&mount_manager),
-                            source_media_entries.clone(),
-                            storage_devices.clone(),
-                            allowed_connected_devices.clone(),
-                            transfer_logic::DetectedTransferInfo {
-                                source_media:     None,
-                                card_id:          None,
-                                source_device:    None,
-                                device_location:  Some(by_id_name),
-                                real_device_path: Some(real_path),
-                            },
-                            Arc::clone(&backup_log_manager),
-                            media_dir.clone(),
-                        ));
+                        crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
                     }
                     Some(DeviceFilterResult::Unknown { real_path, by_id_name }) => {
                         let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
@@ -871,23 +819,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                transfer_handles.push(transfer_logic::spawn_transfer(
-                                    Arc::clone(&ui),
-                                    Arc::clone(&registry),
-                                    Arc::clone(&mount_manager),
-                                    source_media_entries.clone(),
-                                    storage_devices.clone(),
-                                    allowed_connected_devices.clone(),
-                                    transfer_logic::DetectedTransferInfo {
-                                        source_media:     None,
-                                        card_id:          None,
-                                        source_device:    None,
-                                        device_location:  Some(by_id_name),
-                                        real_device_path: Some(real_path),
-                                    },
-                                    Arc::clone(&backup_log_manager),
-                                    media_dir.clone(),
-                                ));
+                                crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
                             }
                             ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                                 ignore_device_list.push(by_id_name.clone());
@@ -902,23 +834,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                transfer_handles.push(transfer_logic::spawn_transfer(
-                                    Arc::clone(&ui),
-                                    Arc::clone(&registry),
-                                    Arc::clone(&mount_manager),
-                                    source_media_entries.clone(),
-                                    storage_devices.clone(),
-                                    allowed_connected_devices.clone(),
-                                    transfer_logic::DetectedTransferInfo {
-                                        source_media:     None,
-                                        card_id:          None,
-                                        source_device:    None,
-                                        device_location:  Some(by_id_name),
-                                        real_device_path: Some(real_path),
-                                    },
-                                    Arc::clone(&backup_log_manager),
-                                    media_dir.clone(),
-                                ));
+                                crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
                             }
                             ui_api::UnknownDeviceResponse::Ignore => {}
                         }
@@ -943,6 +859,8 @@ fn main() {
             }
         }
     }
+    // Drop spawn_deps before the join loop so its ui clone doesn't prevent try_unwrap.
+    drop(spawn_deps);
     loop {
         match Arc::try_unwrap(ui) {
             Ok(mutex) => {

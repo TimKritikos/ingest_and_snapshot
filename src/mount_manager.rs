@@ -32,9 +32,20 @@ const FILESYSTEM_TYPES_TO_TRY: &[&str] = &[
     "exfat", "vfat", "ntfs3", "ntfs", "ext4", "btrfs", "xfs", "f2fs",
 ];
 
+/// Everything needed to spawn transfer threads after a successful mount.
+pub struct SpawnDeps {
+    pub ui: Arc<Mutex<Box<dyn UiBackend>>>,
+    pub registry: Arc<Mutex<crate::transfer_registry::PendingTransferRegistry>>,
+    pub all_source_media: Vec<crate::SourceMediaEntry>,
+    pub all_storage_devices: Vec<crate::StorageDeviceEntry>,
+    pub backup_log_manager: Arc<Mutex<crate::backup_log::BackupLogManager>>,
+    pub media_dir: PathBuf,
+}
+
 struct InternalMountEntry {
     id: MountId,
-    transfer_id: TransferId,
+    by_id_name: String,
+    user_transfer_ids: Vec<TransferId>,
     real_device_path: PathBuf,
     mountpoint: PathBuf,
     /// True once the kernel mount syscall succeeded. False means mount is in progress or failed.
@@ -94,16 +105,16 @@ impl MountManager {
 pub fn start_mount(
     real_device_path: PathBuf,
     by_id_name: String,
-    transfer_id: TransferId,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
-    on_mount_success: Option<Box<dyn FnOnce(PathBuf) + Send + 'static>>,
+    spawn_deps: Arc<SpawnDeps>,
+    storage_devices: Vec<crate::StorageDeviceEntry>,
+    source_media_entries: Vec<crate::SourceMediaEntry>,
 ) -> Option<MountId> {
     let (id, mountpoint) = {
         let mut guard = manager.lock().unwrap();
 
         // Dedup: if any existing entry tracks the same physical device, return it as-is.
-        // The on_mount_success callback is dropped here — the mount is already in progress or done.
         if let Some(existing) = guard.mounts.iter().find(|m| m.real_device_path == real_device_path) {
             return Some(existing.id);
         }
@@ -117,7 +128,8 @@ pub fn start_mount(
         let mountpoint = PathBuf::from(MOUNT_BASE_DIR).join(format!("{:08x}", id));
         guard.mounts.push(InternalMountEntry {
             id,
-            transfer_id,
+            by_id_name: by_id_name.clone(),
+            user_transfer_ids: vec![],
             real_device_path: real_device_path.clone(),
             mountpoint: mountpoint.clone(),
             is_mounted: false,
@@ -127,7 +139,7 @@ pub fn start_mount(
 
     let _ = ui.lock().unwrap().mount_update(MountUpdate::MountAdded(MountEntry {
         id,
-        by_id_name,
+        by_id_name: by_id_name.clone(),
         real_device_path: real_device_path.clone(),
         mountpoint: mountpoint.clone(),
         status: MountEntryStatus::Mounting,
@@ -135,7 +147,7 @@ pub fn start_mount(
     }));
 
     thread::spawn(move || {
-        mount_thread(id, real_device_path, mountpoint, manager, ui, on_mount_success);
+        mount_thread(id, real_device_path, mountpoint, by_id_name, manager, ui, spawn_deps, storage_devices, source_media_entries);
     });
 
     Some(id)
@@ -177,19 +189,25 @@ pub fn start_unmount(
     }
 }
 
-/// Initiates unmounting of all filesystems associated with a given transfer in background threads.
-/// Called when a transfer completes.
+/// Initiates unmounting of filesystems associated with a given transfer in background threads.
+/// Uses reference-counting: only unmounts entries where the transfer was registered AND
+/// the reference count drops to zero.
 pub fn start_unmount_for_transfer(
     transfer_id: TransferId,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
 ) {
     let entries: Vec<(MountId, PathBuf, bool)> = {
-        let guard = manager.lock().unwrap();
-        guard.mounts.iter()
-            .filter(|m| m.transfer_id == transfer_id)
-            .map(|m| (m.id, m.mountpoint.clone(), m.is_mounted))
-            .collect()
+        let mut guard = manager.lock().unwrap();
+        let mut to_unmount = Vec::new();
+        for mount in &mut guard.mounts {
+            let was_registered = mount.user_transfer_ids.contains(&transfer_id);
+            mount.user_transfer_ids.retain(|&id| id != transfer_id);
+            if was_registered && mount.user_transfer_ids.is_empty() {
+                to_unmount.push((mount.id, mount.mountpoint.clone(), mount.is_mounted));
+            }
+        }
+        to_unmount
     };
 
     for (mount_id, mountpoint, is_mounted) in entries {
@@ -200,10 +218,7 @@ pub fn start_unmount_for_transfer(
                 match do_unmount(&mountpoint) {
                     Ok(()) => {}
                     Err(reason) => {
-                        let _ = ui_clone.lock().unwrap().mount_update(MountUpdate::UnmountFailed {
-                            id: mount_id,
-                            reason,
-                        });
+                        let _ = ui_clone.lock().unwrap().mount_update(MountUpdate::UnmountFailed { id: mount_id, reason });
                         return;
                     }
                 }
@@ -247,13 +262,39 @@ pub fn remove_mounts_for_device(
     }
 }
 
+/// Registers a transfer as a user of the mount for `real_device_path`.
+/// Idempotent: calling it multiple times with the same transfer_id has no effect.
+pub fn register_mount_user(
+    real_device_path: &Path,
+    transfer_id: TransferId,
+    manager: &Arc<Mutex<MountManager>>,
+) {
+    let mut guard = manager.lock().unwrap();
+    if let Some(entry) = guard.mounts.iter_mut().find(|m| m.real_device_path == real_device_path) {
+        if !entry.user_transfer_ids.contains(&transfer_id) {
+            entry.user_transfer_ids.push(transfer_id);
+        }
+    }
+}
+
+/// Returns the by-id names of all currently-mounted block devices.
+pub fn get_mounted_device_locations(manager: &Arc<Mutex<MountManager>>) -> Vec<String> {
+    manager.lock().unwrap().mounts.iter()
+        .filter(|m| m.is_mounted)
+        .map(|m| m.by_id_name.clone())
+        .collect()
+}
+
 fn mount_thread(
     id: MountId,
     real_device_path: PathBuf,
     mountpoint: PathBuf,
+    by_id_name: String,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
-    on_mount_success: Option<Box<dyn FnOnce(PathBuf) + Send + 'static>>,
+    spawn_deps: Arc<SpawnDeps>,
+    storage_devices: Vec<crate::StorageDeviceEntry>,
+    source_media_entries: Vec<crate::SourceMediaEntry>,
 ) {
     // Device absent before we even started (race between udev event and thread start)
     // — remove the entry entirely, nothing to show.
@@ -319,8 +360,52 @@ fn mount_thread(
 
     let _ = ui.lock().unwrap().mount_update(MountUpdate::MountCompleted { id, fs_type });
 
-    if let Some(callback) = on_mount_success {
-        callback(mountpoint.clone());
+    let config_overrides = match crate::per_device_config::load_per_device_config(&mountpoint,storage_devices.clone(),source_media_entries.clone()) {
+        Ok(overrides) => overrides,
+        Err(reason) => {
+            let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+            let _ = ui.lock().unwrap().user_query(
+                crate::ui_api::UserQuery::FatalError(crate::ui_api::FatalErrorQuery {
+                    error: crate::ui_api::FatalErrorKind::PerDeviceConfig(reason),
+                    response_tx,
+                }),
+                false,
+            );
+            let _ = response_rx.recv();
+            vec![]
+        }
+    };
+    let effective: Vec<crate::per_device_config::PerDeviceTransferOverride> = if config_overrides.is_empty() {
+        vec![crate::per_device_config::PerDeviceTransferOverride {
+            source_media: None,
+            storage_device: None,
+            input_path: None,
+        }]
+    } else {
+        config_overrides
+    };
+    for transfer_override in effective {
+        let source_media = transfer_override.source_media.as_deref()
+            .and_then(|sm| spawn_deps.all_source_media.iter()
+                .find(|e| e.directory == sm))
+            .cloned();
+        let _ = crate::transfer_logic::spawn_transfer(
+            Arc::clone(&spawn_deps.ui),
+            Arc::clone(&spawn_deps.registry),
+            Arc::clone(&manager),
+            spawn_deps.all_source_media.clone(),
+            spawn_deps.all_storage_devices.clone(),
+            crate::transfer_logic::DetectedTransferInfo {
+                source_media,
+                card_id: None,
+                source_device: transfer_override.storage_device,
+                device_location: Some(by_id_name.clone()),
+                real_device_path: Some(real_device_path.clone()),
+                input_path: transfer_override.input_path,
+            },
+            Arc::clone(&spawn_deps.backup_log_manager),
+            spawn_deps.media_dir.clone(),
+        );
     }
 
     // TODO: Read source_media_data.json and other metadata from the mounted filesystem

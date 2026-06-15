@@ -191,8 +191,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                         state.device_location_picker_selection = 0;
                     }
                     KeyCode::Char('i') | KeyCode::Char('I') => {
-                        // Only open the picker when input_path is not frozen.
-                        if !matches!(query.initial_data.input_path, TransferFieldState::Frozen) {
+                        {
                             let mount_root = query.initial_data.input_path_mount_root.clone();
                             let start_dir = compute_picker_start_dir(
                                 query.initial_data.input_path.value(),
@@ -703,7 +702,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let data = &query.initial_data;
 
     // Builds a display Line for one transfer field. Rendering varies by state:
-    //   Frozen          → "Loading..."  in none_style   (placeholder until animated braille is added)
     //   AutoSelected(None)  → "none"        in none_style
     //   AutoSelected(Some)  → value text    in value_style
     //   Overridden          → value text    in value_style + " (overridden)" in overwritten style
@@ -713,7 +711,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
             spans.push(Span::styled(h.to_owned(), hint_style));
         }
         match field {
-            TransferFieldState::Frozen                  => spans.push(Span::styled("Loading...", none_style)),
             TransferFieldState::AutoSelected(None)      => spans.push(Span::styled("none",       none_style)),
             TransferFieldState::AutoSelected(Some(val)) => spans.push(Span::styled(val.clone(),  value_style)),
             TransferFieldState::Overridden(val)         => {
@@ -726,7 +723,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
 
     // source_media_dir stores a directory path; resolve it to a human-readable device name for display.
     let source_media_display: TransferFieldState<String> = match &data.source_media_dir {
-        TransferFieldState::Frozen => TransferFieldState::Frozen,
         TransferFieldState::AutoSelected(dir_opt) => {
             let display = dir_opt.as_deref()
                 .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
@@ -750,7 +746,6 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
 
     // device_location stores a raw by-id name; translate the well-known sentinel to a readable label.
     let device_location_display: TransferFieldState<String> = match &data.device_location {
-        TransferFieldState::Frozen => TransferFieldState::Frozen,
         TransferFieldState::AutoSelected(loc_opt) => {
             let display = loc_opt.as_deref().map(|loc| {
                 if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
@@ -773,10 +768,9 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
 
     // input_path stores a PathBuf; convert to String for field_line.
     let input_path_display: TransferFieldState<String> = match &data.input_path {
-        TransferFieldState::Frozen               => TransferFieldState::Frozen,
-        TransferFieldState::AutoSelected(None)   => TransferFieldState::AutoSelected(None),
+        TransferFieldState::AutoSelected(None)    => TransferFieldState::AutoSelected(None),
         TransferFieldState::AutoSelected(Some(p)) => TransferFieldState::AutoSelected(Some(p.to_string_lossy().into_owned())),
-        TransferFieldState::Overridden(p)        => TransferFieldState::Overridden(p.to_string_lossy().into_owned()),
+        TransferFieldState::Overridden(p)         => TransferFieldState::Overridden(p.to_string_lossy().into_owned()),
     };
 
     let lines: Vec<Line> = vec![
@@ -877,12 +871,13 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
     });
 
     let (context, detail) = match &query.error {
-        FatalErrorKind::DevicesJson(msg) => ("Failed to load data from devices.json", msg.as_str()),
-        FatalErrorKind::SourceMedia(msg) => ("Failed to load source media configurations", msg.as_str()),
-        FatalErrorKind::BackupLog(msg)   => ("Failed to load backup log", msg.as_str()),
-        FatalErrorKind::CardId(msg)      => ("Card ID handling error", msg.as_str()),
-        FatalErrorKind::Transfer(msg)    => ("Data transfer error", msg.as_str()),
-        FatalErrorKind::ActiveTransfers  => ("Cannot quit while transfers are in progress", "Please wait for all active transfers to complete before quitting."),
+        FatalErrorKind::DevicesJson(msg)    => ("Failed to load data from devices.json", msg.as_str()),
+        FatalErrorKind::SourceMedia(msg)    => ("Failed to load source media configurations", msg.as_str()),
+        FatalErrorKind::BackupLog(msg)      => ("Failed to load backup log", msg.as_str()),
+        FatalErrorKind::CardId(msg)         => ("Card ID handling error", msg.as_str()),
+        FatalErrorKind::Transfer(msg)       => ("Data transfer error", msg.as_str()),
+        FatalErrorKind::ActiveTransfers     => ("Cannot quit while transfers are in progress", "Please wait for all active transfers to complete before quitting."),
+        FatalErrorKind::PerDeviceConfig(msg) => ("Failed to load per-device config", msg.as_str()),
     };
 
     let rows = Layout::default()

@@ -35,17 +35,15 @@ pub enum TransferFieldState<T> {
     AutoSelected(Option<T>),
     /// The user has manually set the field to this value.
     Overridden(T),
-    /// The field is locked and cannot be changed (e.g. waiting for a block device to mount).
-    Frozen,
 }
 
 impl<T> TransferFieldState<T> {
     /// Returns the current value if one is available, or `None` when the state is
-    /// `AutoSelected(None)` or `Frozen`.
+    /// `AutoSelected(None)`.
     pub fn value(&self) -> Option<&T> {
         match self {
             Self::AutoSelected(Some(v)) | Self::Overridden(v) => Some(v),
-            Self::AutoSelected(None) | Self::Frozen           => None,
+            Self::AutoSelected(None) => None,
         }
     }
 
@@ -149,6 +147,7 @@ pub enum FatalErrorKind {
     CardId(String),
     Transfer(String),
     ActiveTransfers,
+    PerDeviceConfig(String),
 }
 
 pub struct FatalErrorQuery {
