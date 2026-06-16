@@ -145,7 +145,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         //Update the data of the current transfer query if the main logic has sent anything new
         if let Some(UserQuery::ApproveTransfer(latest_query)) = query_state.query_queue.front_mut() {
             if let Ok(update) = latest_query.update_rx.try_recv() {
-                latest_query.initial_data = update;
+                latest_query.fields = update;
             }
         }
 

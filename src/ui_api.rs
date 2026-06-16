@@ -22,34 +22,12 @@
 
 use std::path::PathBuf;
 use crossbeam_channel::{Receiver, Sender};
+use uuid::Uuid;
+use crate::transfer_logic::TransferFields;
 
 pub struct TransferSample {
     pub timestamp_ms: u64,
     pub bytes_done: u64,
-}
-
-/// Describes the state of a single field in a transfer approval dialog.
-/// Exactly one state is valid at a time, preventing conflicting flag combinations.
-pub enum TransferFieldState<T> {
-    /// The system automatically detected a value. `None` means detection ran but found nothing.
-    AutoSelected(Option<T>),
-    /// The user has manually set the field to this value.
-    Overridden(T),
-}
-
-impl<T> TransferFieldState<T> {
-    /// Returns the current value if one is available, or `None` when the state is
-    /// `AutoSelected(None)`.
-    pub fn value(&self) -> Option<&T> {
-        match self {
-            Self::AutoSelected(Some(v)) | Self::Overridden(v) => Some(v),
-            Self::AutoSelected(None) => None,
-        }
-    }
-
-    pub fn is_overridden(&self) -> bool {
-        matches!(self, Self::Overridden(_))
-    }
 }
 
 pub enum TransferEvent {
@@ -70,7 +48,7 @@ pub enum ApproveTransferResponse {
     Denied,
     DeviceOverwrite(SourceMediaSelection),
     CardIdChanged(String),
-    StorageDeviceChanged(String), // storage device ID
+    StorageDeviceChanged(Uuid),   // storage device ID
     StorageDeviceAuto,            // reset storage device to auto-detected
     DeviceLocationChanged(String), // new /dev/disk/by-id/ entry selected
     DeviceLocationAuto,            // reset device location to auto-detected
@@ -95,35 +73,15 @@ pub enum ConfirmCardIdResponse {
     BackToQuery,
 }
 
-pub struct ApproveTransferQueryUpdate {
-    pub source_media_dir: TransferFieldState<String>,
-    pub source_device: TransferFieldState<String>,
-    pub card_id: TransferFieldState<String>,
-    pub device_location: TransferFieldState<String>,
-    /// Virtual path on the source device (e.g. `PathBuf::from("/DCIM")`).
-    /// Frozen while the block device is not yet mounted.
-    pub input_path: TransferFieldState<PathBuf>,
-    /// Actual OS mountpoint of the source block device, if one is mounted.
-    /// `None` for local-filesystem transfers (where the virtual path IS the actual path).
-    pub input_path_mount_root: Option<PathBuf>,
-}
-
 pub struct ApproveTransferQuery {
-    pub initial_data: ApproveTransferQueryUpdate,
+    /// The current transfer field selection. The UI resolves each field against its detected
+    /// value and derives "is an auto value available?" from whether the `*_detected` is `Some`.
+    pub fields: TransferFields,
     pub response_tx: Sender<ApproveTransferResponse>,
-    pub update_rx: Receiver<ApproveTransferQueryUpdate>,
-    /// Whether an auto-detected source media exists for this transfer.
-    /// When false, the UI should not offer an "Auto-detected" option in the device picker,
-    /// since returning to Auto would mean returning to no source media.
-    pub has_auto_detected_source_media: bool,
-    /// Whether an auto-detected storage device exists for this transfer.
-    /// When true, the picker offers an "Auto-detected" option that sends StorageDeviceAuto.
-    pub has_auto_detected_storage_device: bool,
+    /// Stream of updated field selections pushed by the logic as the user edits the dialog.
+    pub update_rx: Receiver<TransferFields>,
     /// All known storage devices that can be selected as the destination for this transfer.
     pub available_storage_devices: Vec<crate::StorageDeviceEntry>,
-    /// Whether an auto-detected device location exists for this transfer.
-    /// When false the picker offers no "Auto-detected" option.
-    pub has_auto_detected_device_location: bool,
     /// All currently connected allowed device locations (by-id names) the user can pick from.
     pub available_device_locations: Vec<String>,
 }
@@ -213,7 +171,7 @@ pub enum CardIdInLogWarningResponse {
 }
 
 pub enum UserQuery {
-    ApproveTransfer(ApproveTransferQuery),
+    ApproveTransfer(Box<ApproveTransferQuery>),
     UnknownDevice(UnknownDeviceQuery),
     FatalError(FatalErrorQuery), //XXX: This doesn't get priority in the queue but it's assumed it
                                  //will be sent before any other message anyways so it doesn't matter

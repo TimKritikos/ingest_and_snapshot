@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use udev::{Enumerator, MonitorBuilder};
 use std::ffi::OsStr;
 use sysinfo::System;
+use uuid::Uuid;
 
 mod ui;
 mod ui_api;
@@ -66,7 +67,7 @@ struct DataStructureVersion {
 #[derive(Deserialize)]
 struct DeviceEntry {
     names: Vec<String>,
-    id: String,
+    id: Uuid,
     device_type: Vec<String>,
 }
 
@@ -123,7 +124,7 @@ struct SourceMediaConfig {
 
 #[derive(Clone)]
 pub struct StorageDeviceEntry {
-    pub id: String,
+    pub id: Uuid,
     pub display_name: String,
 }
 
@@ -436,6 +437,8 @@ fn main() {
     let mut runtime_allow_list: Vec<String> = allow_device_list.clone();
     ui.lock().unwrap().add_config(allow_device_list.clone(), ignore_device_list.clone()).unwrap();
 
+    let system_hostname = System::host_name().unwrap_or_else(|| "unknown".to_owned());
+
     let devices_config: DevicesConfig = {
         let devices_path = media_dir.join("metadata/devices.json");
 
@@ -479,7 +482,7 @@ fn main() {
     let storage_devices: Vec<StorageDeviceEntry> = devices_config.devices.iter()
         .filter(|d| d.device_type.iter().any(|t| t == "storage"))
         .map(|d| StorageDeviceEntry {
-            id:           d.id.clone(),
+            id:           d.id,
             display_name: d.names.join(", "),
         })
         .collect();
@@ -664,7 +667,7 @@ fn main() {
             }
         }
         for (real_path, by_id_name, _) in startup_allowed {
-            crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+            crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(), system_hostname.clone());
         }
 
         for (real_path, by_id_name, syspath) in startup_unknown {
@@ -688,7 +691,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+                    crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(),system_hostname.clone());
                 }
                 ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                     ignore_device_list.push(by_id_name.clone());
@@ -703,7 +706,7 @@ fn main() {
                     if !allowed_connected_devices.contains(&by_id_name) {
                         allowed_connected_devices.push(by_id_name.clone());
                     }
-                    crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+                    crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(),system_hostname.clone());
                 }
                 ui_api::UnknownDeviceResponse::Ignore => {}
             }
@@ -715,7 +718,6 @@ fn main() {
     const LOOP_SLEEP: time::Duration = time::Duration::from_millis(50);
 
     let mut sys = System::new();
-    let system_hostname = System::host_name().unwrap_or_else(|| "unknown".to_owned());
     let mut last_system_info_sent = time::Instant::now()
         .checked_sub(SYSTEM_INFO_INTERVAL)
         .unwrap_or_else(time::Instant::now);
@@ -768,11 +770,11 @@ fn main() {
                             card_id:          None,
                             source_device:    None,
                             device_location:  None,
-                            real_device_path: None,
                             input_path:       None,
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),
+                        system_hostname.clone(),
                     ));
                 }
                 ui_api::UiToLogicMessage::UnmountRequest(mount_id) => {
@@ -796,7 +798,7 @@ fn main() {
                         }
                         syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
                         syspath_to_real_path.insert(syspath, real_path.clone());
-                        crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+                        crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(),system_hostname.clone());
                     }
                     Some(DeviceFilterResult::Unknown { real_path, by_id_name }) => {
                         let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::UnknownDeviceResponse>();
@@ -819,7 +821,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+                                crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(), system_hostname.clone());
                             }
                             ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                                 ignore_device_list.push(by_id_name.clone());
@@ -834,7 +836,7 @@ fn main() {
                                 if !allowed_connected_devices.contains(&by_id_name) {
                                     allowed_connected_devices.push(by_id_name.clone());
                                 }
-                                crate::mount_manager::start_mount(real_path, by_id_name, Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone());
+                                crate::mount_manager::start_mount((real_path, by_id_name), Arc::clone(&mount_manager), Arc::clone(&ui), Arc::clone(&spawn_deps),storage_devices.clone(),source_media_entries.clone(), system_hostname.clone());
                             }
                             ui_api::UnknownDeviceResponse::Ignore => {}
                         }

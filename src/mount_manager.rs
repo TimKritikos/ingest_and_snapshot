@@ -103,14 +103,16 @@ impl MountManager {
 /// only removed when the device disconnects (see `remove_mounts_for_device`), or when the user
 /// manually requests removal.
 pub fn start_mount(
-    real_device_path: PathBuf,
-    by_id_name: String,
+    device_location: crate::transfer_logic::DeviceLocation,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     spawn_deps: Arc<SpawnDeps>,
     storage_devices: Vec<crate::StorageDeviceEntry>,
     source_media_entries: Vec<crate::SourceMediaEntry>,
+    system_hostname: String,
 ) -> Option<MountId> {
+    let (real_device_path, by_id_name) = device_location; //TODO: Actually use this type properly
+                                                          //here
     let (id, mountpoint) = {
         let mut guard = manager.lock().unwrap();
 
@@ -147,7 +149,7 @@ pub fn start_mount(
     }));
 
     thread::spawn(move || {
-        mount_thread(id, real_device_path, mountpoint, by_id_name, manager, ui, spawn_deps, storage_devices, source_media_entries);
+        mount_thread(id, (real_device_path,by_id_name), mountpoint, manager, ui, spawn_deps, storage_devices, source_media_entries, system_hostname);
     });
 
     Some(id)
@@ -285,17 +287,19 @@ pub fn get_mounted_device_locations(manager: &Arc<Mutex<MountManager>>) -> Vec<S
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mount_thread(
     id: MountId,
-    real_device_path: PathBuf,
+    device_location: crate::transfer_logic::DeviceLocation,
     mountpoint: PathBuf,
-    by_id_name: String,
     manager: Arc<Mutex<MountManager>>,
     ui: Arc<Mutex<Box<dyn UiBackend>>>,
     spawn_deps: Arc<SpawnDeps>,
     storage_devices: Vec<crate::StorageDeviceEntry>,
     source_media_entries: Vec<crate::SourceMediaEntry>,
+    system_hostname: String,
 ) {
+    let (real_device_path, by_id_name) = device_location;
     // Device absent before we even started (race between udev event and thread start)
     // — remove the entry entirely, nothing to show.
     if !real_device_path.exists() {
@@ -385,10 +389,9 @@ fn mount_thread(
         config_overrides
     };
     for transfer_override in effective {
-        let source_media = transfer_override.source_media.as_deref()
-            .and_then(|sm| spawn_deps.all_source_media.iter()
-                .find(|e| e.directory == sm))
-            .cloned();
+        // The per-device config stores the source media directory relative to media_dir,
+        // which is exactly the id `DetectedTransferInfo::source_media` expects.
+        let source_media = transfer_override.source_media.clone();
         let _ = crate::transfer_logic::spawn_transfer(
             Arc::clone(&spawn_deps.ui),
             Arc::clone(&spawn_deps.registry),
@@ -399,12 +402,12 @@ fn mount_thread(
                 source_media,
                 card_id: None,
                 source_device: transfer_override.storage_device,
-                device_location: Some(by_id_name.clone()),
-                real_device_path: Some(real_device_path.clone()),
+                device_location: Some((real_device_path.clone(), by_id_name.clone())),
                 input_path: transfer_override.input_path,
             },
             Arc::clone(&spawn_deps.backup_log_manager),
             spawn_deps.media_dir.clone(),
+            system_hostname.clone(),
         );
     }
 

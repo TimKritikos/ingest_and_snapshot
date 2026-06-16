@@ -8,8 +8,9 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, ApproveTransferQueryUpdate, TransferFieldState, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
+use crate::transfer_logic::TransferFields;
 
 pub struct QueryWindowState {
     pub query_queue: VecDeque<UserQuery>,
@@ -53,12 +54,12 @@ impl QueryWindowState {
     }
 }
 
-fn can_approve(data: &ApproveTransferQueryUpdate) -> bool {
-    data.source_media_dir.value().is_some()
-        && data.card_id.value().is_some_and(|id| !id.is_empty())
-        && data.source_device.value().is_some_and(|d| !d.is_empty())
-        && data.device_location.value().is_some()
-        && data.input_path.value().is_some()
+fn can_approve(fields: &TransferFields) -> bool {
+    fields.source_media().is_some()
+        && fields.card_id().is_some_and(|id| !id.is_empty())
+        && fields.storage_device().is_some()
+        && fields.device_location().is_some()
+        && fields.input_path().is_some()
 }
 
 pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices: Option<&[SourceMediaEntry]>) {
@@ -74,7 +75,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                     TextEntryOutcome::Editing   => {}
                 }
             } else if state.device_picker_open {
-                let has_auto_detected = query.has_auto_detected_source_media;
+                let has_auto_detected = query.fields.source_media_detected.is_some();
                 let device_offset = if has_auto_detected { 1 } else { 0 };
                 let device_count = available_devices.map(|d| d.len() + device_offset).unwrap_or(device_offset.max(1));
                 match key.code {
@@ -97,7 +98,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                 }
             } else if state.storage_device_picker_open {
                 let devices = &query.available_storage_devices;
-                let has_auto = query.has_auto_detected_storage_device;
+                let has_auto = query.fields.storage_device_detected.is_some();
                 let device_offset = if has_auto { 1 } else { 0 };
                 let device_count = devices.len() + device_offset;
                 match key.code {
@@ -107,7 +108,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                         if has_auto && state.storage_device_picker_selection == 0 {
                             let _ = query.response_tx.send(ApproveTransferResponse::StorageDeviceAuto);
                         } else if let Some(device) = devices.get(state.storage_device_picker_selection - device_offset) {
-                            let _ = query.response_tx.send(ApproveTransferResponse::StorageDeviceChanged(device.id.clone()));
+                            let _ = query.response_tx.send(ApproveTransferResponse::StorageDeviceChanged(device.id));
                         }
                         state.storage_device_picker_open = false;
                     }
@@ -116,7 +117,7 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                 }
             } else if state.device_location_picker_open {
                 let locations = &query.available_device_locations;
-                let has_auto = query.has_auto_detected_device_location;
+                let has_auto = query.fields.device_location_detected.is_some();
                 let location_offset = if has_auto { 1 } else { 0 };
                 let location_count = locations.len() + location_offset;
                 match key.code {
@@ -192,9 +193,9 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                     }
                     KeyCode::Char('i') | KeyCode::Char('I') => {
                         {
-                            let mount_root = query.initial_data.input_path_mount_root.clone();
+                            let mount_root = query.fields.mount_root.clone();
                             let start_dir = compute_picker_start_dir(
-                                query.initial_data.input_path.value(),
+                                query.fields.input_path(),
                                 mount_root.as_deref(),
                             );
                             state.input_path_picker_entries = load_dir_entries(&start_dir, mount_root.as_deref());
@@ -205,9 +206,9 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                         }
                     }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
-                        state.card_id_entry = Some(TextEntryState::new(query.initial_data.card_id.value().cloned().unwrap_or_default()));
+                        state.card_id_entry = Some(TextEntryState::new(query.fields.card_id().cloned().unwrap_or_default()));
                     }
-                    KeyCode::Enter if can_approve(&query.initial_data) => {
+                    KeyCode::Enter if can_approve(&query.fields) => {
                         if let Some(UserQuery::ApproveTransfer(query)) = state.query_queue.pop_front() {
                             let _ = query.response_tx.send(ApproveTransferResponse::Approved);
                         }
@@ -405,11 +406,15 @@ pub fn render(
                     cursor_pos: entry.cursor,
                 }.render(frame.area(), frame.buffer_mut());
             } else if state.device_picker_open {
-                render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection, query.has_auto_detected_source_media);
+                render_device_picker(frame, available_devices, state.device_override.as_ref(), state.device_picker_selection, query.fields.source_media_detected.is_some());
             } else if state.storage_device_picker_open {
-                render_storage_device_picker(frame, &query.available_storage_devices, query.initial_data.source_device.value().map(|s| s.as_str()).unwrap_or(""), query.initial_data.source_device.is_overridden(), query.has_auto_detected_storage_device, state.storage_device_picker_selection);
+                let storage_display = query.fields.storage_device()
+                    .and_then(|id| query.available_storage_devices.iter().find(|d| &d.id == id))
+                    .map(|d| d.display_name.as_str())
+                    .unwrap_or("");
+                render_storage_device_picker(frame, &query.available_storage_devices, storage_display, query.fields.storage_device_selected.is_overridden(), query.fields.storage_device_detected.is_some(), state.storage_device_picker_selection);
             } else if state.device_location_picker_open {
-                render_device_location_picker(frame, &query.available_device_locations, query.initial_data.device_location.value().map(|s| s.as_str()), query.initial_data.device_location.is_overridden(), query.has_auto_detected_device_location, state.device_location_picker_selection);
+                render_device_location_picker(frame, &query.available_device_locations, query.fields.device_location_name(), query.fields.device_location_selected.is_overridden(), query.fields.device_location_detected.is_some(), state.device_location_picker_selection);
             } else if state.input_path_picker_open {
                 render_input_path_picker(frame, state);
             }
@@ -461,7 +466,7 @@ fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransfe
     let ok       = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
     let ok_dim   = Style::default().fg(Color::DarkGray);
     let deny     = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let (approve_key_style, approve_label_style) = if can_approve(&query.initial_data) {
+    let (approve_key_style, approve_label_style) = if can_approve(&query.fields) {
         (ok, hint)
     } else {
         (ok_dim, ok_dim)
@@ -699,86 +704,65 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let overwritten  = Style::default().fg(Color::DarkGray);
     let none_style   = Style::default().fg(Color::DarkGray);
     let hint_style   = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
-    let data = &query.initial_data;
+    let fields = &query.fields;
 
-    // Builds a display Line for one transfer field. Rendering varies by state:
-    //   AutoSelected(None)  → "none"        in none_style
-    //   AutoSelected(Some)  → value text    in value_style
-    //   Overridden          → value text    in value_style + " (overridden)" in overwritten style
-    let field_line = |label: &str, hint: Option<&str>, field: &TransferFieldState<String>| -> Line<'static> {
+    // Renders one field line. `value` is the already-resolved display string (None → "none");
+    // `overridden` appends a "(overridden)" marker when the user manually set the field.
+    let field_line = |label: &str, hint: Option<&str>, value: Option<&str>, overridden: bool| -> Line<'static> {
         let mut spans = vec![Span::styled(label.to_owned(), label_style)];
         if let Some(h) = hint {
             spans.push(Span::styled(h.to_owned(), hint_style));
         }
-        match field {
-            TransferFieldState::AutoSelected(None)      => spans.push(Span::styled("none",       none_style)),
-            TransferFieldState::AutoSelected(Some(val)) => spans.push(Span::styled(val.clone(),  value_style)),
-            TransferFieldState::Overridden(val)         => {
-                spans.push(Span::styled(val.clone(),     value_style));
-                spans.push(Span::styled(" (overridden)", overwritten));
+        match value {
+            None      => spans.push(Span::styled("none", none_style)),
+            Some(val) => {
+                spans.push(Span::styled(val.to_owned(), value_style));
+                if overridden {
+                    spans.push(Span::styled(" (overridden)", overwritten));
+                }
             }
         }
         Line::from(spans)
     };
 
-    // source_media_dir stores a directory path; resolve it to a human-readable device name for display.
-    let source_media_display: TransferFieldState<String> = match &data.source_media_dir {
-        TransferFieldState::AutoSelected(dir_opt) => {
-            let display = dir_opt.as_deref()
-                .and_then(|dir| available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
-                .map(|e| {
-                    let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-                    format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
-                });
-            TransferFieldState::AutoSelected(display)
-        }
-        TransferFieldState::Overridden(dir) => {
-            let display = available_devices
-                .and_then(|devs| devs.iter().find(|e| e.directory.to_string_lossy() == dir.as_str()))
-                .map(|e| {
-                    let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-                    format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
-                })
-                .unwrap_or_else(|| dir.clone());
-            TransferFieldState::Overridden(display)
-        }
-    };
+    // source media is stored as a directory id; resolve it to a human-readable device name.
+    let source_media_value: Option<String> = fields.source_media().map(|dir| {
+        available_devices
+            .and_then(|devs| devs.iter().find(|e| &e.directory == dir))
+            .map(|e| {
+                let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
+                format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
+            })
+            .unwrap_or_else(|| dir.to_string_lossy().into_owned())
+    });
 
-    // device_location stores a raw by-id name; translate the well-known sentinel to a readable label.
-    let device_location_display: TransferFieldState<String> = match &data.device_location {
-        TransferFieldState::AutoSelected(loc_opt) => {
-            let display = loc_opt.as_deref().map(|loc| {
-                if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
-                    "Local filesystem".to_owned()
-                } else {
-                    loc.to_owned()
-                }
-            });
-            TransferFieldState::AutoSelected(display)
-        }
-        TransferFieldState::Overridden(loc) => {
-            let display = if loc == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
-                "Local filesystem".to_owned()
-            } else {
-                loc.clone()
-            };
-            TransferFieldState::Overridden(display)
-        }
-    };
+    let card_id_value: Option<String> = fields.card_id().cloned();
 
-    // input_path stores a PathBuf; convert to String for field_line.
-    let input_path_display: TransferFieldState<String> = match &data.input_path {
-        TransferFieldState::AutoSelected(None)    => TransferFieldState::AutoSelected(None),
-        TransferFieldState::AutoSelected(Some(p)) => TransferFieldState::AutoSelected(Some(p.to_string_lossy().into_owned())),
-        TransferFieldState::Overridden(p)         => TransferFieldState::Overridden(p.to_string_lossy().into_owned()),
-    };
+    // storage device is stored as a UUID; resolve it to its display name.
+    let storage_value: Option<String> = fields.storage_device().map(|id| {
+        query.available_storage_devices.iter()
+            .find(|d| &d.id == id)
+            .map(|d| d.display_name.clone())
+            .unwrap_or_else(|| id.to_string())
+    });
+
+    // device location is a by-id name; translate the well-known sentinel to a readable label.
+    let device_location_value: Option<String> = fields.device_location_name().map(|name| {
+        if name == crate::transfer_logic::LOCAL_FILESYSTEM_DEVICE_LOCATION {
+            "Local filesystem".to_owned()
+        } else {
+            name.to_owned()
+        }
+    });
+
+    let input_path_value: Option<String> = fields.input_path().map(|p| p.to_string_lossy().into_owned());
 
     let lines: Vec<Line> = vec![
-        field_line("    Source media: ", Some("[S] "), &source_media_display),
-        field_line("         Card ID: ", Some("[C] "), &data.card_id),
-        field_line("  Storage device: ", Some("[D] "), &data.source_device),
-        field_line(" Device location: ", Some("[L] "), &device_location_display),
-        field_line("      Input path: ", Some("[I] "), &input_path_display),
+        field_line("    Source media: ", Some("[S] "), source_media_value.as_deref(),     fields.source_media_selected.is_overridden()),
+        field_line("         Card ID: ", Some("[C] "), card_id_value.as_deref(),          fields.card_id_selected.is_overridden()),
+        field_line("  Storage device: ", Some("[D] "), storage_value.as_deref(),          fields.storage_device_selected.is_overridden()),
+        field_line(" Device location: ", Some("[L] "), device_location_value.as_deref(),  fields.device_location_selected.is_overridden()),
+        field_line("      Input path: ", Some("[I] "), input_path_value.as_deref(),        fields.input_path_selected.is_overridden()),
     ];
 
     frame.render_widget(Paragraph::new(lines), area);

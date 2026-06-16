@@ -6,6 +6,7 @@ use std::{thread, time, process};
 use crate::ui_api;
 use crate::ui::TuiBackend;
 use crate::{SourceMediaEntry, CardNamingScheme, StorageDeviceEntry};
+use crate::transfer_logic::{TransferFields, TransferFieldState};
 
 pub fn run() -> ! {
     let now_ms = || -> u64 {
@@ -61,11 +62,11 @@ pub fn run() -> ! {
 
     let dummy_storage_devices = vec![
         StorageDeviceEntry {
-            id:           "01940000-0000-7000-0000-000000000001".to_string(),
+            id:           uuid::Uuid::parse_str("01940000-0000-7000-0000-000000000001").unwrap(),
             display_name: "Sony SF-G 64GB".to_string(),
         },
         StorageDeviceEntry {
-            id:           "01940000-0000-7000-0000-000000000002".to_string(),
+            id:           uuid::Uuid::parse_str("01940000-0000-7000-0000-000000000002").unwrap(),
             display_name: "Lexar Professional 256GB, Lexar Professional 256GB Backup".to_string(),
         },
     ];
@@ -279,235 +280,74 @@ pub fn run() -> ! {
                 ).unwrap();
 
                 let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
-                let (update_tx,   update_rx)   = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
+                let (update_tx,   update_rx)   = crossbeam_channel::unbounded::<TransferFields>();
 
                 let dummy_device_locations_approve = dummy_device_locations.clone();
-                let auto_detected_device_location_approve = Some(dummy_device_locations_approve[0].clone());
+                // A dummy auto-detected block device: (real device node, by-id name).
+                let auto_detected_device_location: (PathBuf, String) =
+                    (PathBuf::from("/dev/sdz1"), dummy_device_locations_approve[0].clone());
 
-                ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
-                    initial_data: ui_api::ApproveTransferQueryUpdate {
-                        source_media_dir: ui_api::TransferFieldState::AutoSelected(Some("/media/source_media/nikon_z9".to_string())),
-                        source_device:    ui_api::TransferFieldState::AutoSelected(Some("Sony SF-G 64GB".to_string())),
-                        card_id:          ui_api::TransferFieldState::AutoSelected(Some("NIKON_001".to_string())),
-                        device_location:  ui_api::TransferFieldState::AutoSelected(auto_detected_device_location_approve.clone()),
-                        input_path:       ui_api::TransferFieldState::AutoSelected(None),
-                        input_path_mount_root: None,
-                    },
+                let mut fields = TransferFields {
+                    card_id_detected:         Some("NIKON_001".to_string()),
+                    card_id_selected:         TransferFieldState::AutoSelected,
+                    source_media_detected:    Some(PathBuf::from("/media/source_media/nikon_z9")),
+                    source_media_selected:    TransferFieldState::AutoSelected,
+                    storage_device_detected:  Some(dummy_storage_devices_approve[0].id),
+                    storage_device_selected:  TransferFieldState::AutoSelected,
+                    device_location_detected: Some(auto_detected_device_location.clone()),
+                    device_location_selected: TransferFieldState::AutoSelected,
+                    input_path_detected:      None,
+                    input_path_selected:      TransferFieldState::NotSelected,
+                    mount_root:               None,
+                };
+
+                ui_approve.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(Box::new(ui_api::ApproveTransferQuery {
+                    fields: fields.clone(),
                     response_tx,
                     update_rx,
-                    has_auto_detected_source_media: true,
-                    has_auto_detected_storage_device: true,
                     available_storage_devices: dummy_storage_devices_approve.clone(),
-                    has_auto_detected_device_location: true,
                     available_device_locations: dummy_device_locations_approve.clone(),
-                }), false).unwrap();
-
-                let auto_detected_source_device             = "Sony SF-G 64GB".to_string();
-                let mut current_source_media_dir            = Some("/media/source_media/nikon_z9".to_string());
-                let mut current_source_device               = auto_detected_source_device.clone();
-                let mut current_card_id                     = "NIKON_001".to_string();
-                let mut current_device_overridden           = false;
-                let mut current_storage_device_overridden   = false;
-                let mut current_card_id_overridden          = false;
-                let mut current_device_location             = auto_detected_device_location_approve.clone();
-                let mut current_device_location_overridden  = false;
-                let mut current_input_path: Option<PathBuf> = None;
-                let mut current_input_path_overridden       = false;
+                })), false).unwrap();
 
                 while let Ok(msg) = response_rx.recv() {
                     match msg {
                         ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
-                            let (new_source_media_dir, new_card_id, new_device_overridden) = match selection {
-                                ui_api::SourceMediaSelection::Auto => (
-                                    Some("/media/source_media/nikon_z9".to_string()),
-                                    current_card_id.clone(),
-                                    false,
-                                ),
-                                ui_api::SourceMediaSelection::Overridden(directory) => (
-                                    Some(directory),
-                                    "UNKNOWN".to_string(),
-                                    true,
-                                ),
+                            fields.source_media_selected = match selection {
+                                ui_api::SourceMediaSelection::Auto                  => TransferFieldState::AutoSelected,
+                                ui_api::SourceMediaSelection::Overridden(directory) => TransferFieldState::Overridden(PathBuf::from(directory)),
                             };
-                            current_source_media_dir  = new_source_media_dir.clone();
-                            current_card_id           = new_card_id.clone();
-                            current_device_overridden = new_device_overridden;
-                            let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
-                            let update = ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(new_source_media_dir.unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(new_source_media_dir)
-                                },
-                                source_device: if current_storage_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
-                                },
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(new_card_id)
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(new_card_id))
-                                },
-                                device_location: if current_device_location_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                },
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            };
-                            let _ = update_tx.send(update);
+                            let _ = tx2.send(ui_api::TransferEvent::SourceMediaChanged(
+                                fields.source_media().map(|p| p.to_string_lossy().into_owned())));
+                            let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id) => {
-                            let display = dummy_storage_devices_approve.iter()
-                                .find(|d| d.id == device_id)
-                                .map(|d| d.display_name.clone())
-                                .unwrap_or_default();
-                            current_source_device             = display.clone();
-                            current_storage_device_overridden = true;
-                            let update = ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device:    ui_api::TransferFieldState::Overridden(display),
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: if current_device_location_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                },
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            };
-                            let _ = update_tx.send(update);
+                            fields.storage_device_selected = TransferFieldState::Overridden(device_id);
+                            let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::StorageDeviceAuto => {
-                            current_source_device             = auto_detected_source_device.clone();
-                            current_storage_device_overridden = false;
-                            let update = ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device:    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone())),
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: if current_device_location_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                },
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            };
-                            let _ = update_tx.send(update);
+                            fields.storage_device_selected = TransferFieldState::AutoSelected;
+                            let _ = update_tx.send(fields.clone());
                         }
-                        ui_api::ApproveTransferResponse::DeviceLocationChanged(location) => {
-                            current_device_location             = Some(location);
-                            current_device_location_overridden  = true;
-                            let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device: if current_storage_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
-                                },
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default()),
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            });
+                        ui_api::ApproveTransferResponse::DeviceLocationChanged(name) => {
+                            fields.device_location_selected =
+                                TransferFieldState::Overridden((PathBuf::from("/dev/sdz1"), name));
+                            let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::DeviceLocationAuto => {
-                            current_device_location             = auto_detected_device_location_approve.clone();
-                            current_device_location_overridden  = false;
-                            let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device: if current_storage_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
-                                },
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: ui_api::TransferFieldState::AutoSelected(current_device_location.clone()),
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            });
+                            fields.device_location_selected = TransferFieldState::AutoSelected;
+                            let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::InputPathChanged(new_path) => {
-                            current_input_path          = Some(new_path);
-                            current_input_path_overridden = true;
-                            let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device: if current_storage_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
-                                },
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: if current_device_location_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                },
-                                input_path: ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/"))),
-                                input_path_mount_root: None,
-                            });
+                            fields.input_path_selected = TransferFieldState::Overridden(new_path);
+                            let _ = update_tx.send(fields.clone());
+                        }
+                        ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
+                            fields.card_id_selected = if new_id.is_empty() {
+                                TransferFieldState::AutoSelected
+                            } else {
+                                TransferFieldState::Overridden(new_id)
+                            };
+                            let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::Approved => {
                             // Start the Nikon Z9 transfer: 500 MB, steady 40–65 MB/s
@@ -538,38 +378,6 @@ pub fn run() -> ! {
                             });
                             break;
                         }
-                        ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
-                            current_card_id_overridden = !new_id.is_empty();
-                            current_card_id = new_id;
-                            let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                source_media_dir: if current_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                },
-                                source_device: if current_storage_device_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_source_device.clone()))
-                                },
-                                card_id: if current_card_id_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(Some(current_card_id.clone()))
-                                },
-                                device_location: if current_device_location_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                },
-                                input_path: if current_input_path_overridden {
-                                    ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                } else {
-                                    ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                },
-                                input_path_mount_root: None,
-                            });
-                        }
                         ui_api::ApproveTransferResponse::Denied => {
                             let _ = tx2.send(ui_api::TransferEvent::DeviceUnplugged);
                             break;
@@ -597,226 +405,69 @@ pub fn run() -> ! {
                     ).unwrap();
 
                     let (response_tx, response_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferResponse>();
-                    let (update_tx, update_rx) = crossbeam_channel::unbounded::<ui_api::ApproveTransferQueryUpdate>();
+                    let (update_tx, update_rx) = crossbeam_channel::unbounded::<TransferFields>();
                     let dummy_storage_devices_manual = dummy_storage_devices_for_manual.clone();
                     let dummy_device_locations_manual = dummy_device_locations_for_manual.clone();
-                    ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(ui_api::ApproveTransferQuery {
-                        initial_data: ui_api::ApproveTransferQueryUpdate {
-                            source_media_dir: ui_api::TransferFieldState::AutoSelected(None),
-                            source_device:    ui_api::TransferFieldState::AutoSelected(None),
-                            card_id:          ui_api::TransferFieldState::AutoSelected(None),
-                            device_location:  ui_api::TransferFieldState::AutoSelected(None),
-                            input_path:       ui_api::TransferFieldState::AutoSelected(None),
-                            input_path_mount_root: None,
-                        },
+
+                    let mut fields = TransferFields {
+                        card_id_detected:         None,
+                        card_id_selected:         TransferFieldState::NotSelected,
+                        source_media_detected:    None,
+                        source_media_selected:    TransferFieldState::NotSelected,
+                        storage_device_detected:  None,
+                        storage_device_selected:  TransferFieldState::NotSelected,
+                        device_location_detected: None,
+                        device_location_selected: TransferFieldState::NotSelected,
+                        input_path_detected:      None,
+                        input_path_selected:      TransferFieldState::NotSelected,
+                        mount_root:               None,
+                    };
+
+                    ui.lock().unwrap().user_query(ui_api::UserQuery::ApproveTransfer(Box::new(ui_api::ApproveTransferQuery {
+                        fields: fields.clone(),
                         response_tx,
                         update_rx,
-                        has_auto_detected_source_media: false,
-                        has_auto_detected_storage_device: false,
                         available_storage_devices: dummy_storage_devices_manual.clone(),
-                        has_auto_detected_device_location: false,
                         available_device_locations: dummy_device_locations_manual.clone(),
-                    }), false).unwrap();
+                    })), false).unwrap();
 
                     thread::spawn(move || {
-                        let mut current_source_media_dir:           Option<String>  = None;
-                        let mut current_source_device:              String          = String::new();
-                        let mut current_card_id:                    String          = String::new();
-                        let mut current_device_overridden:          bool            = false;
-                        let mut current_storage_device_overridden:  bool            = false;
-                        let mut current_card_id_overridden:         bool            = false;
-                        let mut current_device_location:            Option<String>  = None;
-                        let mut current_device_location_overridden: bool            = false;
-                        let mut current_input_path:                 Option<PathBuf> = None;
-                        let mut current_input_path_overridden:      bool            = false;
-
                         while let Ok(response) = response_rx.recv() {
                             match response {
                                 ui_api::ApproveTransferResponse::DeviceOverwrite(selection) => {
-                                    let (new_source_media_dir, new_device_overridden) = match selection {
-                                        ui_api::SourceMediaSelection::Auto                    => (None, false),
-                                        ui_api::SourceMediaSelection::Overridden(directory)  => (Some(directory), true),
+                                    fields.source_media_selected = match selection {
+                                        ui_api::SourceMediaSelection::Auto                  => TransferFieldState::NotSelected,
+                                        ui_api::SourceMediaSelection::Overridden(directory) => TransferFieldState::Overridden(PathBuf::from(directory)),
                                     };
-                                    current_source_media_dir  = new_source_media_dir.clone();
-                                    current_device_overridden = new_device_overridden;
-                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(new_source_media_dir.clone()));
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(new_source_media_dir.unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(new_source_media_dir)
-                                        },
-                                        source_device: if current_storage_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
-                                        },
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: if current_device_location_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                        },
-                                        input_path: if current_input_path_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                        },
-                                        input_path_mount_root: None,
-                                    });
+                                    let _ = transfer_event_tx.send(ui_api::TransferEvent::SourceMediaChanged(
+                                        fields.source_media().map(|p| p.to_string_lossy().into_owned())));
+                                    let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::StorageDeviceChanged(device_id) => {
-                                    let display = dummy_storage_devices_manual.iter()
-                                        .find(|d| d.id == device_id)
-                                        .map(|d| d.display_name.clone())
-                                        .unwrap_or_default();
-                                    current_source_device             = display.clone();
-                                    current_storage_device_overridden = true;
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                        },
-                                        source_device:    ui_api::TransferFieldState::Overridden(display),
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: if current_device_location_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                        },
-                                        input_path: if current_input_path_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                        },
-                                        input_path_mount_root: None,
-                                    });
+                                    fields.storage_device_selected = TransferFieldState::Overridden(device_id);
+                                    let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::StorageDeviceAuto => {}
                                 ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
-                                    current_card_id_overridden = !new_id.is_empty();
-                                    current_card_id = new_id;
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                        },
-                                        source_device: if current_storage_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
-                                        },
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: if current_device_location_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                        },
-                                        input_path: if current_input_path_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                        },
-                                        input_path_mount_root: None,
-                                    });
+                                    fields.card_id_selected = if new_id.is_empty() {
+                                        TransferFieldState::NotSelected
+                                    } else {
+                                        TransferFieldState::Overridden(new_id)
+                                    };
+                                    let _ = update_tx.send(fields.clone());
                                 }
-                                ui_api::ApproveTransferResponse::DeviceLocationChanged(location) => {
-                                    current_device_location             = Some(location);
-                                    current_device_location_overridden  = true;
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                        },
-                                        source_device: if current_storage_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
-                                        },
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default()),
-                                        input_path: if current_input_path_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                        },
-                                        input_path_mount_root: None,
-                                    });
+                                ui_api::ApproveTransferResponse::DeviceLocationChanged(name) => {
+                                    fields.device_location_selected =
+                                        TransferFieldState::Overridden((PathBuf::from("/dev/sdz1"), name));
+                                    let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::DeviceLocationAuto => {
-                                    current_device_location             = None;
-                                    current_device_location_overridden  = false;
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                        },
-                                        source_device: if current_storage_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
-                                        },
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: ui_api::TransferFieldState::AutoSelected(current_device_location.clone()),
-                                        input_path: if current_input_path_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/")))
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_input_path.clone())
-                                        },
-                                        input_path_mount_root: None,
-                                    });
+                                    fields.device_location_selected = TransferFieldState::NotSelected;
+                                    let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::InputPathChanged(new_path) => {
-                                    current_input_path          = Some(new_path);
-                                    current_input_path_overridden = true;
-                                    let _ = update_tx.send(ui_api::ApproveTransferQueryUpdate {
-                                        source_media_dir: if current_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_media_dir.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_source_media_dir.clone())
-                                        },
-                                        source_device: if current_storage_device_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_source_device.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_source_device.is_empty() { None } else { Some(current_source_device.clone()) })
-                                        },
-                                        card_id: if current_card_id_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_card_id.clone())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(if current_card_id.is_empty() { None } else { Some(current_card_id.clone()) })
-                                        },
-                                        device_location: if current_device_location_overridden {
-                                            ui_api::TransferFieldState::Overridden(current_device_location.clone().unwrap_or_default())
-                                        } else {
-                                            ui_api::TransferFieldState::AutoSelected(current_device_location.clone())
-                                        },
-                                        input_path: ui_api::TransferFieldState::Overridden(current_input_path.clone().unwrap_or(PathBuf::from("/"))),
-                                        input_path_mount_root: None,
-                                    });
+                                    fields.input_path_selected = TransferFieldState::Overridden(new_path);
+                                    let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::Approved => {
                                     // TODO: start actual dummy transfer

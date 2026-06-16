@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use serde::Deserialize;
+use uuid::Uuid;
 
 pub const CONFIG_FILE_NAME: &str = "ingest_and_snapshot_per_device_config.json";
 const EXPECTED_DATA_TYPE: &str = "ingest_and_snapshot_per_device_config";
@@ -42,7 +43,7 @@ struct PerDeviceConfigTransferEntry {
     #[serde(default)]
     source_media: Option<PathBuf>,
     #[serde(default)]
-    storage_device: Option<String>,
+    storage_device: Option<Uuid>,
     #[serde(default)]
     input_path: Option<Vec<String>>,
 }
@@ -63,7 +64,7 @@ pub struct PerDeviceTransferOverride {
     /// Directory path of the source media entry to auto-select, if specified.
     pub source_media: Option<PathBuf>,
     /// Storage device ID to auto-select, if specified.
-    pub storage_device: Option<String>,
+    pub storage_device: Option<Uuid>,
     /// Input path relative to the device root (always starts with `/`), if specified.
     pub input_path: Option<PathBuf>,
 }
@@ -154,7 +155,7 @@ pub fn load_per_device_config(
                     };
                     overrides.push(PerDeviceTransferOverride {
                         source_media: entry.source_media.clone(),
-                        storage_device: entry.storage_device.clone(),
+                        storage_device: entry.storage_device,
                         input_path: Some(normalized),
                     });
                 }

@@ -1,4 +1,5 @@
 use crate::backup_log::*;
+use crate::transfer_logic::TransferSample;
 
 #[cfg(test)]
 mod tests {
@@ -87,7 +88,7 @@ mod tests {
             next_uuidv7:      None,
             comment:          Some("My first backup session".to_owned()),
             completed_backup: false,
-            new_transfers: vec![BackupLogTransfer {
+            new_transfers: vec![BackupLogTransferEntry {
                 transfer_uuidv7:            Some("019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned()),
                 card_path:                  PathBuf::from("source_media/cam/DATA/CARD0003"),
                 card_id:                    Some("CARD0003".to_owned()),
@@ -100,8 +101,8 @@ mod tests {
                 input_path:                 Some(PathBuf::from("/DCIM")),
                 input_path_overridden:      Some(true),
                 transfer_samples:           Some(vec![
-                    BackupLogSample { timestamp_ms: 1000, bytes_done: 1024 },
-                    BackupLogSample { timestamp_ms: 2000, bytes_done: 2048 },
+                    TransferSample { timestamp_ms: 1000, bytes_done: 1024 },
+                    TransferSample { timestamp_ms: 2000, bytes_done: 2048 },
                 ]),
                 transfer_performed_by:      Some("ingest_and_snapshot 0.1.0".to_owned()),
                 bytes_total_measured:       Some(2048),

@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::ser::PrettyFormatter;
+use crate::transfer_logic::{TransferSample, TransferEntry};
 
 const BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
 const BACKUP_LOG_STRUCTURE_MAJOR: u32 = 0;
@@ -33,12 +34,6 @@ pub struct BackupLogStructureVersion {
     pub capability_level: u32,
 }
 
-/// A single progress sample recorded during a data transfer.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupLogSample {
-    pub timestamp_ms: u64,
-    pub bytes_done: u64,
-}
 
 #[derive(Deserialize)]
 struct BackupLogHeader {
@@ -47,7 +42,7 @@ struct BackupLogHeader {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct BackupLogTransfer {
+pub struct BackupLogTransferEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_uuidv7: Option<String>,
     pub card_path: PathBuf,
@@ -81,7 +76,7 @@ pub struct BackupLogTransfer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_hostname: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transfer_samples: Option<Vec<BackupLogSample>>,
+    pub transfer_samples: Option<Vec<TransferSample>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -96,7 +91,7 @@ pub struct BackupLogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub completed_backup: bool,
-    pub new_transfers: Vec<BackupLogTransfer>,
+    pub new_transfers: Vec<BackupLogTransferEntry>,
 }
 
 /// Thread-safe writer for a single backup log entry.
@@ -143,39 +138,33 @@ impl BackupLogManager {
     }
 
     /// Appends a new transfer record and flushes to disk atomically.
-    pub fn add_transfer(
-        &mut self,
-        transfer_uuidv7: String,
-        card_path: PathBuf,
-        card_id: String,
-        source_media_overridden: bool,
-        card_id_overridden: bool,
-        medium_uuidv7: Option<String>,
-        medium_uuidv7_overridden: bool,
-        device_location: Option<String>,
-        device_location_overridden: bool,
-        input_path: Option<PathBuf>,
-        input_path_overridden: bool,
-        system_hostname: Option<String>,
-    ) -> Result<(), String> {
-        self.entry.new_transfers.push(BackupLogTransfer {
-            transfer_uuidv7:            Some(transfer_uuidv7),
-            card_path,
-            card_id:                    Some(card_id),
-            source_media_overridden:    Some(source_media_overridden),
-            card_id_overridden:         Some(card_id_overridden),
-            medium_uuidv7,
-            medium_uuidv7_overridden:   Some(medium_uuidv7_overridden),
-            device_location,
-            device_location_overridden: Some(device_location_overridden),
-            input_path,
-            input_path_overridden:      Some(input_path_overridden),
+    ///
+    /// Takes the live [`TransferEntry`] and prepares its data for on-disk storage here: the
+    /// `Uuid` storage id is rendered to a string, the device-location by-id name is pulled out of
+    /// its `(path, name)` pair, and the user's auto-vs-override choices are recorded as booleans.
+    /// Outcome fields (bytes/failure/samples) are filled in later by `finalize_transfer` /
+    /// `update_transfer_samples`.
+    pub fn add_transfer(&mut self, transfer: &TransferEntry) -> Result<(), String> {
+        let fields = &transfer.fields;
+        self.entry.new_transfers.push(BackupLogTransferEntry {
+            transfer_uuidv7:            Some(transfer.transfer_uuidv7.clone()),
+            card_path:                  transfer.card_path.clone()
+                                            .expect("card_path must be set before recording the transfer"),
+            card_id:                    fields.card_id().cloned(),
+            source_media_overridden:    Some(fields.source_media_selected.is_overridden()),
+            card_id_overridden:         Some(fields.card_id_selected.is_overridden()),
+            medium_uuidv7:              fields.storage_device().map(|id| id.to_string()),
+            medium_uuidv7_overridden:   Some(fields.storage_device_selected.is_overridden()),
+            device_location:            fields.device_location_name().map(|name| name.to_owned()),
+            device_location_overridden: Some(fields.device_location_selected.is_overridden()),
+            input_path:                 fields.input_path().cloned(),
+            input_path_overridden:      Some(fields.input_path_selected.is_overridden()),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
             bytes_total_measured:       None,
             transfer_failed:            None,
             failure_message:            None,
-            system_hostname,
+            system_hostname:            Some(transfer.system_hostname.clone()),
         });
         self.flush()
     }
@@ -204,7 +193,7 @@ impl BackupLogManager {
 
     /// Appends samples to an existing transfer record and flushes to disk atomically.
     /// Identified by `card_path`; silently does nothing if no matching transfer is found.
-    pub fn update_transfer_samples(&mut self, card_path: &Path, new_samples: Vec<BackupLogSample>) -> Result<(), String> {
+    pub fn update_transfer_samples(&mut self, card_path: &Path, new_samples: Vec<TransferSample>) -> Result<(), String> {
         if let Some(transfer) = self.entry.new_transfers.iter_mut().find(|t| t.card_path == card_path) {
             transfer.transfer_samples.get_or_insert_with(Vec::new).extend(new_samples);
         }

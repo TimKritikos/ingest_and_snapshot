@@ -57,12 +57,28 @@ mod tests {
         let backup_log_dir = media_dir.join("metadata").join(crate::backup_log::BACKUP_LOG_DATA_DIR_NAME);
         std::fs::create_dir_all(&backup_log_dir).unwrap();
         let mut log_manager = BackupLogManager::create_new(backup_log_dir, None).unwrap();
-        log_manager.add_transfer(
-            "019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned(),
-            std::path::PathBuf::from("source_media/test_cam/DATA/CARD0000"),
-            "CARD0000".to_owned(),
-            false, false, None, false, None, false, None, false, None,
-        ).unwrap();
+        let prior_transfer = TransferEntry {
+            transfer_uuidv7: "019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned(),
+            fields: TransferFields {
+                card_id_detected:         Some("CARD0000".to_owned()),
+                card_id_selected:         TransferFieldState::AutoSelected,
+                source_media_detected:    None,
+                source_media_selected:    TransferFieldState::NotSelected,
+                storage_device_detected:  None,
+                storage_device_selected:  TransferFieldState::NotSelected,
+                device_location_detected: None,
+                device_location_selected: TransferFieldState::NotSelected,
+                input_path_detected:      None,
+                input_path_selected:      TransferFieldState::NotSelected,
+                mount_root:               None,
+            },
+            system_hostname: "testing_system".to_owned(),
+            card_path: Some(std::path::PathBuf::from("source_media/test_cam/DATA/CARD0000")),
+            bytes_total_measured: None,
+            transfer_samples: None,
+            transfer_result: None,
+        };
+        log_manager.add_transfer(&prior_transfer).unwrap();
         let backup_log_manager = Arc::new(Mutex::new(log_manager));
 
         let (done_tx, done_rx) = crossbeam_channel::unbounded::<bool>();
@@ -85,15 +101,15 @@ mod tests {
             vec![source_media_entry.clone()],
             vec![],
             DetectedTransferInfo {
-                source_media:     Some(source_media_entry),
+                source_media:     Some(source_media_entry.directory.clone()),
                 card_id:          None,
                 source_device:    None,
-                device_location:  Some(LOCAL_FILESYSTEM_DEVICE_LOCATION.to_owned()),
-                real_device_path: None,
+                device_location:  Some((std::path::PathBuf::new(), LOCAL_FILESYSTEM_DEVICE_LOCATION.to_owned())),
                 input_path:       None,
             },
             Arc::clone(&backup_log_manager),
             media_dir,
+            "testing_system".to_string(),
         );
 
         let warning_shown = done_rx

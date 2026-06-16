@@ -1,9 +1,18 @@
 use super::*;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
+
+// Storage device IDs are uuidv7 values; these stand in for two distinct devices in tests.
+const HDD_01: &str = "01940000-0000-7000-0000-0000000000a1";
+const HDD_02: &str = "01940000-0000-7000-0000-0000000000a2";
+
+fn uuid(id: &str) -> Uuid {
+    Uuid::parse_str(id).unwrap()
+}
 
 fn make_storage_device(id: &str) -> crate::StorageDeviceEntry {
     crate::StorageDeviceEntry {
-        id: id.to_string(),
+        id: uuid(id),
         display_name: id.to_string(),
     }
 }
@@ -211,14 +220,16 @@ fn test_absolute_input_path_is_preserved_as_is() {
 
 #[test]
 fn test_unknown_storage_device_id_returns_error() {
+    // A valid uuid that is not in the (empty) device list.
+    const UNKNOWN: &str = "01940000-0000-7000-0000-0000000000ff";
     let temp = tempfile::tempdir().unwrap();
     write_config(
         temp.path(),
-        &config_with_transfers(r#"{"storage_device": "missing_device_id"}"#),
+        &config_with_transfers(&format!(r#"{{"storage_device": "{}"}}"#, UNKNOWN)),
     );
     let result = load_per_device_config(temp.path(), vec![], vec![]);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("missing_device_id"));
+    assert!(result.unwrap_err().contains(UNKNOWN));
 }
 
 #[test]
@@ -226,12 +237,12 @@ fn test_known_storage_device_id_is_forwarded_to_override() {
     let temp = tempfile::tempdir().unwrap();
     write_config(
         temp.path(),
-        &config_with_transfers(r#"{"storage_device": "hdd_01"}"#),
+        &config_with_transfers(&format!(r#"{{"storage_device": "{}"}}"#, HDD_01)),
     );
-    let devices = vec![make_storage_device("hdd_01")];
+    let devices = vec![make_storage_device(HDD_01)];
     let result = load_per_device_config(temp.path(), devices, vec![]).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].storage_device.as_deref(), Some("hdd_01"));
+    assert_eq!(result[0].storage_device, Some(uuid(HDD_01)));
 }
 
 #[test]
@@ -268,16 +279,17 @@ fn test_storage_device_and_source_media_fields_propagate_to_all_expanded_overrid
     write_config(
         temp.path(),
         &config_with_transfers(&format!(
-            r#"{{"storage_device": "hdd_01", "source_media": "{}", "input_path": ["/A", "/B"]}}"#,
+            r#"{{"storage_device": "{}", "source_media": "{}", "input_path": ["/A", "/B"]}}"#,
+            HDD_01,
             camera_dir.display()
         )),
     );
-    let devices = vec![make_storage_device("hdd_01")];
+    let devices = vec![make_storage_device(HDD_01)];
     let source_media = vec![make_source_media_entry(camera_dir.clone())];
     let result = load_per_device_config(temp.path(), devices, source_media).unwrap();
     assert_eq!(result.len(), 2);
     for override_entry in &result {
-        assert_eq!(override_entry.storage_device.as_deref(), Some("hdd_01"));
+        assert_eq!(override_entry.storage_device, Some(uuid(HDD_01)));
         assert_eq!(override_entry.source_media, Some(camera_dir.clone()));
     }
 }
@@ -296,15 +308,17 @@ fn test_separate_transfer_entries_do_not_cross_contaminate_each_other() {
                 "data_type": "ingest_and_snapshot_per_device_config",
                 "data_structure_version": {{"major": 0, "capability_level": 0}},
                 "transfers": [
-                    {{"storage_device": "hdd_01", "source_media": "{}", "input_path": ["/A1", "/A2"]}},
-                    {{"storage_device": "hdd_02", "source_media": "{}", "input_path": ["/B1", "/B2"]}}
+                    {{"storage_device": "{hdd_01}", "source_media": "{camera_a}", "input_path": ["/A1", "/A2"]}},
+                    {{"storage_device": "{hdd_02}", "source_media": "{camera_b}", "input_path": ["/B1", "/B2"]}}
                 ]
             }}"#,
-            camera_a_dir.display(),
-            camera_b_dir.display(),
+            hdd_01 = HDD_01,
+            hdd_02 = HDD_02,
+            camera_a = camera_a_dir.display(),
+            camera_b = camera_b_dir.display(),
         ),
     );
-    let devices = vec![make_storage_device("hdd_01"), make_storage_device("hdd_02")];
+    let devices = vec![make_storage_device(HDD_01), make_storage_device(HDD_02)];
     let source_media = vec![
         make_source_media_entry(camera_a_dir.clone()),
         make_source_media_entry(camera_b_dir.clone()),
@@ -313,18 +327,18 @@ fn test_separate_transfer_entries_do_not_cross_contaminate_each_other() {
     assert_eq!(result.len(), 4);
 
     // First entry's two paths both belong to hdd_01 / camera_a
-    assert_eq!(result[0].storage_device.as_deref(), Some("hdd_01"));
+    assert_eq!(result[0].storage_device, Some(uuid(HDD_01)));
     assert_eq!(result[0].source_media, Some(camera_a_dir.clone()));
     assert_eq!(result[0].input_path, Some(PathBuf::from("/A1")));
-    assert_eq!(result[1].storage_device.as_deref(), Some("hdd_01"));
+    assert_eq!(result[1].storage_device, Some(uuid(HDD_01)));
     assert_eq!(result[1].source_media, Some(camera_a_dir.clone()));
     assert_eq!(result[1].input_path, Some(PathBuf::from("/A2")));
 
     // Second entry's two paths both belong to hdd_02 / camera_b
-    assert_eq!(result[2].storage_device.as_deref(), Some("hdd_02"));
+    assert_eq!(result[2].storage_device, Some(uuid(HDD_02)));
     assert_eq!(result[2].source_media, Some(camera_b_dir.clone()));
     assert_eq!(result[2].input_path, Some(PathBuf::from("/B1")));
-    assert_eq!(result[3].storage_device.as_deref(), Some("hdd_02"));
+    assert_eq!(result[3].storage_device, Some(uuid(HDD_02)));
     assert_eq!(result[3].source_media, Some(camera_b_dir.clone()));
     assert_eq!(result[3].input_path, Some(PathBuf::from("/B2")));
 }
