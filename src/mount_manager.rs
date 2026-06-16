@@ -40,6 +40,9 @@ pub struct SpawnDeps {
     pub all_storage_devices: Vec<crate::StorageDeviceEntry>,
     pub backup_log_manager: Arc<Mutex<crate::backup_log::BackupLogManager>>,
     pub media_dir: PathBuf,
+    /// Shared collection of all active transfer thread handles. Auto-triggered transfers push
+    /// their handles here so the quit guard in main.rs can detect them.
+    pub transfer_handles: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 struct InternalMountEntry {
@@ -392,7 +395,7 @@ fn mount_thread(
         // The per-device config stores the source media directory relative to media_dir,
         // which is exactly the id `DetectedTransferInfo::source_media` expects.
         let source_media = transfer_override.source_media.clone();
-        let _ = crate::transfer_logic::spawn_transfer(
+        let handle = crate::transfer_logic::spawn_transfer(
             Arc::clone(&spawn_deps.ui),
             Arc::clone(&spawn_deps.registry),
             Arc::clone(&manager),
@@ -409,6 +412,7 @@ fn mount_thread(
             spawn_deps.media_dir.clone(),
             system_hostname.clone(),
         );
+        spawn_deps.transfer_handles.lock().unwrap().push(handle);
     }
 
     // TODO: Read source_media_data.json and other metadata from the mounted filesystem

@@ -7,6 +7,7 @@ edition = "2024"
 dummy-ui-data = []
 fps-counter = []
 copy-instead-of-move = []
+disable-ui-safety-checks = []
 
 [dependencies]
 anyhow = "1.0.102"

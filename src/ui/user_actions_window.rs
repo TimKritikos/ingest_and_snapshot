@@ -12,11 +12,17 @@ pub enum SelectedAction {
 
 pub struct ActionsWindowState {
     pub selected: SelectedAction,
+    /// When true the "Unmount and exit" option is greyed out and unselectable because
+    /// transfers are still running. Ignored when the `disable-ui-safety-checks` feature is set.
+    pub quit_disabled: bool,
 }
 
 impl ActionsWindowState {
     pub fn new() -> Self {
-        Self { selected: SelectedAction::Quit }
+        Self {
+            selected: SelectedAction::Quit,
+            quit_disabled: false,
+        }
     }
 }
 
@@ -43,7 +49,10 @@ pub fn handle_key(state: &mut ActionsWindowState, key: KeyEvent) -> Option<Actio
         }
         KeyCode::Enter => {
             return match state.selected {
-                SelectedAction::Quit           => Some(ActionsWindowEvent::Quit),
+                SelectedAction::Quit => {
+                    let blocked = !cfg!(feature = "disable-ui-safety-checks") && state.quit_disabled;
+                    if blocked { None } else { Some(ActionsWindowEvent::Quit) }
+                }
                 SelectedAction::ManualTransfer => Some(ActionsWindowEvent::StartManualTransfer),
                 SelectedAction::Snapshot       => None,
             };
@@ -60,6 +69,9 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
 
     if minimise { return; }
 
+    let quit_visually_disabled =
+        !cfg!(feature = "disable-ui-safety-checks") && state.quit_disabled;
+
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
         "Unmount and exit",
         "Start manual transfer",
@@ -71,6 +83,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
             SelectedAction::ManualTransfer => 1,
             SelectedAction::Snapshot       => 2,
         }))
+        .disabled_indices(if quit_visually_disabled { vec![0] } else { vec![] })
         .focused(focused);
 
     let actions_window_content = actions_window.inner(area);

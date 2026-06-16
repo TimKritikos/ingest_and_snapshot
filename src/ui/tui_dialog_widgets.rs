@@ -10,6 +10,7 @@ pub struct DialogSelectionList<'a> {
     pub items: Vec<&'a str>,
     pub selected: Option<usize>,
     pub focused: bool,
+    pub disabled_indices: Vec<usize>,
 }
 
 impl<'a> DialogSelectionList<'a> {
@@ -19,6 +20,7 @@ impl<'a> DialogSelectionList<'a> {
             items,
             selected: None,
             focused: true,
+            disabled_indices: Vec::new(),
         }
     }
     pub fn title(mut self, t: &'a str) -> Self {
@@ -31,6 +33,10 @@ impl<'a> DialogSelectionList<'a> {
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
+        self
+    }
+    pub fn disabled_indices(mut self, indices: Vec<usize>) -> Self {
+        self.disabled_indices = indices;
         self
     }
 }
@@ -46,6 +52,10 @@ impl Widget for DialogSelectionList<'_> {
         let selected_unfocused = Style::default()
             .bg(Color::White)
             .fg(Color::Black);
+
+        let disabled = Style::default()
+            .fg(Color::DarkGray)
+            .bg(Color::Gray);
 
         // Write background
         let bg = Style::default().bg(Color::Gray).fg(Color::Black);
@@ -103,12 +113,10 @@ impl Widget for DialogSelectionList<'_> {
             let y = inner.y + i as u16;
 
 
-            let style = if Some(i) == self.selected {
-                if self.focused {
-                    selected_focused
-                } else {
-                    selected_unfocused
-                }
+            let style = if self.disabled_indices.contains(&i) {
+                disabled
+            } else if Some(i) == self.selected {
+                if self.focused { selected_focused } else { selected_unfocused }
             } else {
                 bg
             };

@@ -47,6 +47,12 @@ mod per_device_config;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
+/// Removes finished handles in place and returns whether any handles are still running.
+fn has_active_transfer_handles(handles: &mut Vec<std::thread::JoinHandle<()>>) -> bool {
+    handles.retain(|h| !h.is_finished());
+    !handles.is_empty()
+}
+
 const DEVICES_JSON_EXPECTED_MAJOR: u32 = 0;
 const DEVICES_JSON_MIN_CAPABILITY_LEVEL: u32 = 0;
 
@@ -613,6 +619,9 @@ fn main() {
         }
     };
 
+    let transfer_handles: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+
     let spawn_deps = std::sync::Arc::new(mount_manager::SpawnDeps {
         ui: Arc::clone(&ui),
         registry: Arc::clone(&registry),
@@ -620,9 +629,8 @@ fn main() {
         all_storage_devices: storage_devices.clone(),
         backup_log_manager: Arc::clone(&backup_log_manager),
         media_dir: media_dir.clone(),
+        transfer_handles: Arc::clone(&transfer_handles),
     });
-
-    let mut transfer_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     let monitor = MonitorBuilder::new()
         .unwrap()
@@ -741,8 +749,8 @@ fn main() {
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
                 ui_api::UiToLogicMessage::Quit => {
-                    transfer_handles.retain(|h| !h.is_finished());
-                    if !transfer_handles.is_empty() {
+                    let has_active = has_active_transfer_handles(&mut transfer_handles.lock().unwrap());
+                    if has_active {
                         let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
                         let _ = ui.lock().unwrap().user_query(
                             ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
@@ -759,7 +767,7 @@ fn main() {
                     }
                 }
                 ui_api::UiToLogicMessage::StartManualTransfer => {
-                    transfer_handles.push(transfer_logic::spawn_transfer(
+                    transfer_handles.lock().unwrap().push(transfer_logic::spawn_transfer(
                         Arc::clone(&ui),
                         Arc::clone(&registry),
                         Arc::clone(&mount_manager),
@@ -861,8 +869,10 @@ fn main() {
             }
         }
     }
-    // Drop spawn_deps before the join loop so its ui clone doesn't prevent try_unwrap.
+    // Drop spawn_deps and the local handle collection before the join loop so their Arc clones
+    // don't prevent try_unwrap on ui.
     drop(spawn_deps);
+    drop(transfer_handles);
     loop {
         match Arc::try_unwrap(ui) {
             Ok(mutex) => {
@@ -875,5 +885,8 @@ fn main() {
             }
         }
     }
-
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

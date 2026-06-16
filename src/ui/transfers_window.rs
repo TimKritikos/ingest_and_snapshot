@@ -9,6 +9,9 @@ use super::{Transfer, TransferStatus};
 use crate::ui_api::TransferSample;
 use crate::SourceMediaEntry;
 
+//TODO: Not sure where the relevant code is but if a transfer is loaded with samples and now
+//readout of the size of the source dir on the storage device, don't assume it's 100% complete
+
 const ITEM_HEIGHT:   u16 = 4; // 1 title row + 3 chart rows
 const ITEM_GAP:      u16 = 1;
 const PADDING_SIDES: u16 = 2;

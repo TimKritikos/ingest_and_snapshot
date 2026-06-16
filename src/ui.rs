@@ -32,6 +32,10 @@ enum TransferStatus {
     Failed,
 }
 
+fn has_active_ui_transfers(transfers: &[Transfer]) -> bool {
+    transfers.iter().any(|t| matches!(t.status, TransferStatus::InProgress | TransferStatus::NotStarted))
+}
+
 struct Transfer {
     source_media_dir: Option<String>,
     bytes_total: u64,
@@ -139,6 +143,16 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                 transfers.remove(i);
             } else {
                 i += 1;
+            }
+        }
+
+        // Keep the "Unmount and exit" option greyed out while any transfer is running.
+        #[cfg(not(feature = "disable-ui-safety-checks"))]
+        {
+            let transfers_active = has_active_ui_transfers(&transfers);
+            actions_state.quit_disabled = transfers_active;
+            if transfers_active && matches!(actions_state.selected, user_actions_window::SelectedAction::Quit) {
+                actions_state.selected = user_actions_window::SelectedAction::ManualTransfer;
             }
         }
 
@@ -373,3 +387,7 @@ fn render(
         mount_list_overlay::render(frame, overlay_area, mount_list_state);
     }
 }
+
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod tests;
