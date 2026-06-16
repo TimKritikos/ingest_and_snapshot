@@ -723,7 +723,7 @@ fn run_transfer(
         }
     }
 
-    // Step 4: Move the data
+    // Step 4: Decide what will be moved and measure its total size.
     // The approval loop only breaks after a source media dir was selected and its card
     // directory was created, so both values are valid here.
     let source_media_dir = transfer_data.fields.source_media_dir_abs(&media_dir)
@@ -731,7 +731,23 @@ fn run_transfer(
     let current_card_id = transfer_data.fields.card_id_string();
     let destination_dir = source_media_dir.join("DATA").join(&current_card_id);
 
-    // Step 5: Register the transfer in the backup log now that the card directory exists.
+    // Plan the move (which paths get transferred and their total size) before the transfer is
+    // recorded, so the authoritative total size can be written to the backup log up front —
+    // before the copy begins. The move itself only adds the samples and the final result.
+    let source_data_dir_result = resolve_source_data_dir(&transfer_data.fields);
+    let excluded_names: &[&str] = match (source_data_dir_result.as_ref(), transfer_data.fields.mount_root.as_ref()) {
+        (Ok(dir), Some(root)) if dir == root => &[crate::per_device_config::CONFIG_FILE_NAME],
+        _ => &[],
+    };
+    let move_plan_result = source_data_dir_result
+        .and_then(|source_data_dir| plan_card_move(&source_data_dir, excluded_names));
+    // The total is zero when the plan could not be built; the move below then fails with the
+    // same error, so this only ever records an authoritative size for transfers that proceed.
+    let bytes_total_source = move_plan_result.as_ref().map(|plan| plan.bytes_total).unwrap_or(0);
+    transfer_data.bytes_total_measured = Some(bytes_total_source);
+
+    // Step 5: Register the transfer in the backup log now that the card directory exists and the
+    // total size is known.
     let card_path_relative = destination_dir.strip_prefix(&media_dir)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| destination_dir.clone());
@@ -752,17 +768,12 @@ fn run_transfer(
             .update_transfer_samples(&card_path_for_samples, log_samples);
     };
 
-    let source_data_dir_result = resolve_source_data_dir(&transfer_data.fields);
-    let excluded_names: &[&str] = match (source_data_dir_result.as_ref(), transfer_data.fields.mount_root.as_ref()) {
-        (Ok(dir), Some(root)) if dir == root => &[crate::per_device_config::CONFIG_FILE_NAME],
-        _ => &[],
-    };
-    let (bytes_total_source, move_outcome) = match source_data_dir_result {
-        Ok(source_data_dir) => move_card_data(&source_data_dir, &destination_dir, excluded_names, &transfer_event_tx, &mut on_samples),
-        Err(e) => (0, Err(e)),
+    // Step 6: Perform the move, recording only the samples and the final result afterwards.
+    let move_outcome = match move_plan_result {
+        Ok(plan) => move_card_data(&plan, &destination_dir, &transfer_event_tx, &mut on_samples),
+        Err(e)   => Err(e),
     };
 
-    transfer_data.bytes_total_measured = Some(bytes_total_source);
     transfer_data.transfer_result = Some(match &move_outcome {
         Ok(())       => TransferResult::Succeeded,
         Err(message) => TransferResult::Failed(message.clone()),
@@ -770,13 +781,12 @@ fn run_transfer(
 
     match &transfer_data.transfer_result {
         Some(TransferResult::Succeeded) => {
-            // bytes_total_source is the authoritative transfer size (source measurement before binary ran).
             let _ = backup_log_manager.lock().unwrap()
-                .finalize_transfer(&card_path_relative, bytes_total_source, false, None);
+                .finalize_transfer(&card_path_relative, false, None);
         }
         Some(TransferResult::Failed(error_message)) => {
             let _ = backup_log_manager.lock().unwrap()
-                .finalize_transfer(&card_path_relative, bytes_total_source, true, Some(error_message.clone()));
+                .finalize_transfer(&card_path_relative, true, Some(error_message.clone()));
             show_transfer_error(&ui, &transfer_event_tx, error_message.clone());
         }
         None => {}
@@ -1134,13 +1144,58 @@ fn entries_size_bytes(entries: &[PathBuf]) -> std::io::Result<u64> {
     Ok(total)
 }
 
-/// Moves the source data at `source_path` into the (already-created) card directory
-/// `destination_dir` by invoking the system GNU `mv` binary, while periodically
-/// reporting progress to the UI transfer graph through `transfer_event_tx`.
+/// The set of source paths a card-data move will transfer, together with their total size.
+/// Produced by [`plan_card_move`] and consumed by [`move_card_data`], so both the size
+/// measurement written to the backup log and the actual move work from exactly the same paths.
+struct CardMovePlan {
+    /// The paths handed to the transfer binary.
+    source_entries: Vec<PathBuf>,
+    /// Total size in bytes of `source_entries`, measured before the move began.
+    bytes_total: u64,
+}
+
+/// Decides which paths a card-data move will transfer and measures their total size, *without*
+/// moving anything. Running this before the transfer is recorded lets the caller write the
+/// authoritative total size to the backup log up front, before the copy begins.
 ///
-/// `source_path` may be either a directory, whose *contents* are moved into the card
-/// directory (like `mv source/* dest/`, so the directory itself does not become a
-/// subdirectory), or a single file, which is moved into the card directory as-is.
+/// `source_path` may be either a directory, whose *contents* (minus `excluded_names`) are moved
+/// into the card directory — like `mv source/* dest/`, so the directory itself does not become a
+/// subdirectory — or a single file, which is moved into the card directory as-is.
+fn plan_card_move(
+    source_path: &std::path::Path,
+    excluded_names: &[&str],
+) -> Result<CardMovePlan, String> {
+    // metadata() follows symlinks, so a symlink pointing at a directory is still treated
+    // as a directory whose contents are moved.
+    let source_metadata = std::fs::metadata(source_path)
+        .map_err(|e| format!("Failed to inspect source path {:?}: {}", source_path, e))?;
+
+    // A directory move transfers its contents; a file move transfers the file itself.
+    if source_metadata.is_dir() {
+        // Build the entry list first so the exclusion filter is applied once, then derive
+        // the size from that same list — both the transfer and the measurement see identical paths.
+        let directory_entries: Vec<PathBuf> = std::fs::read_dir(source_path)
+            .and_then(|entries| entries.map(|entry| entry.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>())
+            .map_err(|e| format!("Failed to list source directory {:?}: {}", source_path, e))?
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !excluded_names.contains(&n))
+                    .unwrap_or(true)
+            })
+            .collect();
+        let bytes_total = entries_size_bytes(&directory_entries)
+            .map_err(|e| format!("Failed to measure size of source data at {:?}: {}", source_path, e))?;
+        Ok(CardMovePlan { source_entries: directory_entries, bytes_total })
+    } else {
+        Ok(CardMovePlan { source_entries: vec![source_path.to_path_buf()], bytes_total: source_metadata.len() })
+    }
+}
+
+/// Moves the pre-planned data (see [`plan_card_move`]) into the (already-created) card directory
+/// `destination_dir` by invoking the system GNU `mv` binary, while periodically reporting progress
+/// to the UI transfer graph through `transfer_event_tx`.
 ///
 /// The move is delegated to GNU `mv` (rather than a Rust reimplementation) because
 /// the card and the destination are typically on different filesystems, which forces
@@ -1151,52 +1206,14 @@ fn entries_size_bytes(entries: &[PathBuf]) -> std::io::Result<u64> {
 ///
 /// The change timestamp (ctime) is intentionally not preserved: Linux offers no way
 /// to set it, as the kernel updates it on every inode modification.
-/// Returns `(bytes_total_source, outcome)` where `bytes_total_source` is the size of the source
-/// data measured before the binary ran, and `outcome` is `Ok(())` on success or `Err` on failure.
-/// The caller is responsible for recording `bytes_total_source` in the backup log as the
-/// authoritative transfer size and for sending the post-exit destination sample on failure.
 fn move_card_data(
-    source_path: &std::path::Path,
+    plan: &CardMovePlan,
     destination_dir: &std::path::Path,
-    excluded_names: &[&str],
     transfer_event_tx: &crossbeam_channel::Sender<ui_api::TransferEvent>,
     on_samples: &mut impl FnMut(&[ui_api::TransferSample]),
-) -> (u64, Result<(), String>) {
-    // metadata() follows symlinks, so a symlink pointing at a directory is still treated
-    // as a directory whose contents are moved.
-    let source_metadata = match std::fs::metadata(source_path)
-        .map_err(|e| format!("Failed to inspect source path {:?}: {}", source_path, e))
-    {
-        Ok(m) => m,
-        Err(e) => return (0, Err(e)),
-    };
-
-    // A directory move transfers its contents; a file move transfers the file itself.
-    let (source_entries, bytes_total): (Vec<PathBuf>, u64) = if source_metadata.is_dir() {
-        // Build the entry list first so the exclusion filter is applied once, then derive
-        // the size from that same list — both the transfer and the measurement see identical paths.
-        let directory_entries: Vec<PathBuf> = match std::fs::read_dir(source_path)
-            .and_then(|entries| entries.map(|entry| entry.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>())
-            .map_err(|e| format!("Failed to list source directory {:?}: {}", source_path, e))
-        {
-            Ok(v) => v.into_iter().filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| !excluded_names.contains(&n))
-                    .unwrap_or(true)
-            }).collect(),
-            Err(e) => return (0, Err(e)),
-        };
-        let bytes_total = match entries_size_bytes(&directory_entries)
-            .map_err(|e| format!("Failed to measure size of source data at {:?}: {}", source_path, e))
-        {
-            Ok(n) => n,
-            Err(e) => return (0, Err(e)),
-        };
-        (directory_entries, bytes_total)
-    } else {
-        (vec![source_path.to_path_buf()], source_metadata.len())
-    };
+) -> Result<(), String> {
+    let source_entries = &plan.source_entries;
+    let bytes_total = plan.bytes_total;
 
     let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total });
 
@@ -1204,7 +1221,7 @@ fn move_card_data(
         let samples = vec![ui_api::TransferSample { timestamp_ms: current_time_ms(), bytes_done: bytes_total }];
         on_samples(&samples);
         let _ = transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(samples));
-        return (bytes_total, Ok(()));
+        return Ok(());
     }
 
     // The transfer binary blocks until it is done and offers no progress callback, so it
@@ -1215,6 +1232,7 @@ fn move_card_data(
     // keeps the original access and modification times.
     let (move_result_tx, move_result_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
     let move_destination = destination_dir.to_owned();
+    let move_source_entries = source_entries.clone();
     thread::spawn(move || {
         let mut cmd = std::process::Command::new(TRANSFER_BINARY);
         #[cfg(feature = "copy-instead-of-move")]
@@ -1223,7 +1241,7 @@ fn move_card_data(
             .arg("--target-directory")
             .arg(&move_destination)
             .arg("--")
-            .args(&source_entries)
+            .args(&move_source_entries)
             .output();
         let result = match move_command_output {
             Ok(output) if output.status.success() => Ok(()),
@@ -1254,7 +1272,7 @@ fn move_card_data(
         }
     };
 
-    (bytes_total, binary_outcome)
+    binary_outcome
 }
 
 // Mark the transfer as failed in the UI immediately, then show the fatal error dialog.

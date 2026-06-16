@@ -142,7 +142,8 @@ impl BackupLogManager {
     /// Takes the live [`TransferEntry`] and prepares its data for on-disk storage here: the
     /// `Uuid` storage id is rendered to a string, the device-location by-id name is pulled out of
     /// its `(path, name)` pair, and the user's auto-vs-override choices are recorded as booleans.
-    /// Outcome fields (bytes/failure/samples) are filled in later by `finalize_transfer` /
+    /// The total size to be transferred is measured before the move begins and recorded here too.
+    /// The remaining outcome fields (failure/samples) are filled in later by `finalize_transfer` /
     /// `update_transfer_samples`.
     pub fn add_transfer(&mut self, transfer: &TransferEntry) -> Result<(), String> {
         let fields = &transfer.fields;
@@ -161,7 +162,7 @@ impl BackupLogManager {
             input_path_overridden:      Some(fields.input_path_selected.is_overridden()),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
-            bytes_total_measured:       None,
+            bytes_total_measured:       transfer.bytes_total_measured,
             transfer_failed:            None,
             failure_message:            None,
             system_hostname:            Some(transfer.system_hostname.clone()),
@@ -169,19 +170,18 @@ impl BackupLogManager {
         self.flush()
     }
 
-    /// Records the final outcome of a transfer: the measured destination size and whether it failed.
+    /// Records the final outcome of a transfer: whether it failed and any failure message.
+    /// The total size was already recorded by `add_transfer` before the move began.
     /// Identified by `card_path`; silently does nothing if no matching transfer is found.
     pub fn finalize_transfer(
         &mut self,
         card_path: &Path,
-        bytes_total_measured: u64,
         failed: bool,
         failure_message: Option<String>,
     ) -> Result<(), String> {
         if let Some(transfer) = self.entry.new_transfers.iter_mut().find(|t| t.card_path == card_path) {
-            transfer.bytes_total_measured = Some(bytes_total_measured); //TODO: remove that from here
-            transfer.transfer_failed      = Some(failed);
-            transfer.failure_message      = failure_message;
+            transfer.transfer_failed = Some(failed);
+            transfer.failure_message = failure_message;
         }
         self.flush()
     }
