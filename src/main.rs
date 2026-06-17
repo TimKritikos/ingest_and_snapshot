@@ -579,6 +579,30 @@ fn main() {
                 ui.lock().unwrap().new_transfer(source_media_dir, transfer_event_rx).unwrap();
 
                 let transfer_samples = transfer.transfer_samples.as_deref().unwrap_or(&[]);
+                // Absent transfer_failed means outcome is unknown; treat as failed.
+                let transfer_succeeded = transfer.transfer_failed == Some(false);
+                if transfer_succeeded {
+                    if let (Some(bytes_total_measured), Some(last_sample)) =
+                        (transfer.bytes_total_measured, transfer_samples.last())
+                    {
+                        if last_sample.bytes_done != bytes_total_measured {
+                            let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+                            ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                                error: ui_api::FatalErrorKind::BackupLog(format!(
+                                    "transfer {} is recorded as succeeded but final sample ({} bytes) != measured total ({} bytes)",
+                                    transfer.card_path.display(),
+                                    last_sample.bytes_done,
+                                    bytes_total_measured,
+                                )),
+                                response_tx,
+                            }), true).unwrap();
+                            let _ = response_rx.recv();
+                            ui.lock().unwrap().quit().unwrap();
+                            if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
+                            process::exit(1);
+                        }
+                    }
+                }
                 let (bytes_total, ui_samples) = if transfer_samples.is_empty() {
                     // No recorded samples — show as a completed placeholder so the UI
                     // renders it as finished rather than stuck at zero progress.
@@ -596,7 +620,7 @@ fn main() {
                 };
                 transfer_event_tx.send(ui_api::TransferEvent::TransferStarted { bytes_total }).unwrap();
                 transfer_event_tx.send(ui_api::TransferEvent::TransferSamples(ui_samples)).unwrap();
-                if transfer.transfer_failed.unwrap_or(false) {
+                if !transfer_succeeded {
                     transfer_event_tx.send(ui_api::TransferEvent::TransferFailed).unwrap();
                 }
             }
