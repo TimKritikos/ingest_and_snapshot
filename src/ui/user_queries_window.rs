@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse, SnapshotNameResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse, ZeroSizeTransferWarningResponse, SnapshotNameResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 use crate::transfer_logic::TransferFields;
 
@@ -367,6 +367,21 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                 _ => {}
             }
         }
+        Some(UserQuery::ZeroSizeTransferWarning(_)) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('p') | KeyCode::Char('P') => {
+                    if let Some(UserQuery::ZeroSizeTransferWarning(query)) = state.query_queue.pop_front() {
+                        let _ = query.response_tx.send(ZeroSizeTransferWarningResponse::Proceed);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') => {
+                    if let Some(UserQuery::ZeroSizeTransferWarning(query)) = state.query_queue.pop_front() {
+                        let _ = query.response_tx.send(ZeroSizeTransferWarningResponse::Cancel);
+                    }
+                }
+                _ => {}
+            }
+        }
         Some(UserQuery::SnapshotName(query)) => {
             if let Some(entry) = state.snapshot_name_entry.as_mut() {
                 match entry.handle_key(key.code) {
@@ -462,6 +477,7 @@ pub fn render(
         UserQuery::NoInputPathWarning(_) => render_no_input_path_warning(frame, padded),
         UserQuery::NewBackupLog(query) => render_new_backup_log(frame, padded, query),
         UserQuery::CardIdInLogWarning(query) => render_card_id_in_log_warning(frame, padded, query),
+        UserQuery::ZeroSizeTransferWarning(_) => render_zero_size_transfer_warning(frame, padded),
         UserQuery::SnapshotName(_) => {
             render_snapshot_name_prompt(frame, padded);
             // The text entry floats over the whole screen, mirroring the card-ID entry.
@@ -1332,6 +1348,36 @@ fn render_new_backup_log(frame: &mut Frame, area: Rect, _query: &NewBackupLogQue
             Span::styled(" Create new log   ", hint),
             Span::styled("[Esc]", quit),
             Span::styled(" Quit", hint),
+        ]),
+    ];
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
+}
+
+fn render_zero_size_transfer_warning(frame: &mut Frame, area: Rect) {
+    let warning = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let label   = Style::default().fg(Color::Black);
+    let hint    = Style::default().fg(Color::Black);
+    let proceed = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let cancel  = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(vec![Span::styled("Warning: transfer size is zero bytes", warning)]),
+        Line::from(""),
+        Line::from(vec![Span::styled("No files were found at the selected input path.", label)]),
+        Line::from(vec![Span::styled("The transfer will succeed but copy nothing.", label)]),
+        Line::from(vec![Span::styled("If cancled you need to delete the directory manually", label)]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Enter]", proceed),
+            Span::styled(" Proceed anyway   ", hint),
+            Span::styled("[Esc]", cancel),
+            Span::styled(" Cancel transfer", hint),
         ]),
     ];
     let content_height = lines.len() as u16;

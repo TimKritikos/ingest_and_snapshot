@@ -170,6 +170,15 @@ pub enum CardIdInLogWarningResponse {
     Cancel,
 }
 
+pub struct ZeroSizeTransferWarningQuery {
+    pub response_tx: Sender<ZeroSizeTransferWarningResponse>,
+}
+
+pub enum ZeroSizeTransferWarningResponse {
+    Cancel,
+    Proceed,
+}
+
 /// Asks the user for the free-form message that becomes part of the snapshot name. Issued by the
 /// snapshot logic thread right after the user chooses "Finish backup and do snapshot".
 pub struct SnapshotNameQuery {
@@ -195,6 +204,7 @@ pub enum UserQuery {
     NoInputPathWarning(NoInputPathWarningQuery),
     NewBackupLog(NewBackupLogQuery),
     CardIdInLogWarning(CardIdInLogWarningQuery),
+    ZeroSizeTransferWarning(ZeroSizeTransferWarningQuery),
     SnapshotName(SnapshotNameQuery),
 }
 

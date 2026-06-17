@@ -746,6 +746,29 @@ fn run_transfer(
     let bytes_total_source = move_plan_result.as_ref().map(|plan| plan.bytes_total).unwrap_or(0);
     transfer_data.bytes_total_measured = Some(bytes_total_source);
 
+    // Warn the user if the measured transfer size is zero — this is likely unintentional.
+    // The card directory already exists at this point, so there is no BackToQuery option;
+    // the user can either cancel (abandoning the empty card dir) or proceed anyway.
+    if bytes_total_source == 0 {
+        let (warn_tx, warn_rx) = crossbeam_channel::unbounded::<ui_api::ZeroSizeTransferWarningResponse>();
+        if ui.lock().unwrap().user_query(
+            ui_api::UserQuery::ZeroSizeTransferWarning(ui_api::ZeroSizeTransferWarningQuery {
+                response_tx: warn_tx,
+            }),
+            true,
+        ).is_err() {
+            show_transfer_error(&ui, &transfer_event_tx, "Transfer aborted".to_owned());
+            return;
+        }
+        match warn_rx.recv() {
+            Ok(ui_api::ZeroSizeTransferWarningResponse::Cancel) | Err(_) => {
+                let _ = transfer_event_tx.send(ui_api::TransferEvent::DeviceUnplugged);
+                return;
+            }
+            Ok(ui_api::ZeroSizeTransferWarningResponse::Proceed) => {}
+        }
+    }
+
     // Step 5: Register the transfer in the backup log now that the card directory exists and the
     // total size is known.
     let card_path_relative = destination_dir.strip_prefix(&media_dir)
