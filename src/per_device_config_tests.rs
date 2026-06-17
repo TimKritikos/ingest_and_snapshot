@@ -39,6 +39,14 @@ fn config_with_transfers(transfers_json: &str) -> String {
     )
 }
 
+fn config_with_extra_fields(extra_fields_json: &str, transfers_json: &str) -> String {
+    format!(
+        r#"{{"data_type": "ingest_and_snapshot_per_device_config", "data_structure_version": {{"major": 0, "capability_level": 0}}, {}, "transfers": [{}]}}"#,
+        extra_fields_json,
+        transfers_json
+    )
+}
+
 #[test]
 fn test_config_file_not_found() {
     let temp = tempfile::tempdir().unwrap();
@@ -258,87 +266,178 @@ fn test_unknown_source_media_path_returns_error() {
 
 #[test]
 fn test_known_source_media_path_is_forwarded_to_override() {
-    let temp = tempfile::tempdir().unwrap();
-    let camera_dir = temp.path().join("my_camera");
-    std::fs::create_dir(&camera_dir).unwrap();
+    let device = tempfile::tempdir().unwrap();
+    let source_media_temp = tempfile::tempdir().unwrap();
+    let source_media_dir = source_media_temp.path().join("my_camera");
+    std::fs::create_dir(&source_media_dir).unwrap();
     write_config(
-        temp.path(),
-        &config_with_transfers(&format!(r#"{{"source_media": "{}"}}"#, camera_dir.display())),
+        device.path(),
+        &config_with_transfers(&format!(r#"{{"source_media": "{}"}}"#, source_media_dir.display())),
     );
-    let source_media = vec![make_source_media_entry(camera_dir.clone())];
-    let result = load_per_device_config(temp.path(), vec![], source_media).unwrap();
+    let source_media = vec![make_source_media_entry(source_media_dir.clone())];
+    let result = load_per_device_config(device.path(), vec![], source_media).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].source_media, Some(camera_dir));
+    assert_eq!(result[0].source_media, Some(source_media_dir));
 }
 
 #[test]
 fn test_storage_device_and_source_media_fields_propagate_to_all_expanded_overrides() {
-    let temp = tempfile::tempdir().unwrap();
-    let camera_dir = temp.path().join("my_camera");
-    std::fs::create_dir(&camera_dir).unwrap();
+    let device = tempfile::tempdir().unwrap();
+    let source_media_temp = tempfile::tempdir().unwrap();
+    let source_media_dir = source_media_temp.path().join("my_camera");
+    std::fs::create_dir(&source_media_dir).unwrap();
     write_config(
-        temp.path(),
+        device.path(),
         &config_with_transfers(&format!(
             r#"{{"storage_device": "{}", "source_media": "{}", "input_path": ["/A", "/B"]}}"#,
             HDD_01,
-            camera_dir.display()
+            source_media_dir.display()
         )),
     );
     let devices = vec![make_storage_device(HDD_01)];
-    let source_media = vec![make_source_media_entry(camera_dir.clone())];
-    let result = load_per_device_config(temp.path(), devices, source_media).unwrap();
+    let source_media = vec![make_source_media_entry(source_media_dir.clone())];
+    let result = load_per_device_config(device.path(), devices, source_media).unwrap();
     assert_eq!(result.len(), 2);
     for override_entry in &result {
         assert_eq!(override_entry.storage_device, Some(uuid(HDD_01)));
-        assert_eq!(override_entry.source_media, Some(camera_dir.clone()));
+        assert_eq!(override_entry.source_media, Some(source_media_dir.clone()));
     }
 }
 
 #[test]
 fn test_separate_transfer_entries_do_not_cross_contaminate_each_other() {
-    let temp = tempfile::tempdir().unwrap();
-    let camera_a_dir = temp.path().join("camera_a");
-    let camera_b_dir = temp.path().join("camera_b");
-    std::fs::create_dir(&camera_a_dir).unwrap();
-    std::fs::create_dir(&camera_b_dir).unwrap();
+    let device = tempfile::tempdir().unwrap();
+    let source_media_a_temp = tempfile::tempdir().unwrap();
+    let source_media_b_temp = tempfile::tempdir().unwrap();
+    let source_media_a_dir = source_media_a_temp.path().join("camera_a");
+    let source_media_b_dir = source_media_b_temp.path().join("camera_b");
+    std::fs::create_dir(&source_media_a_dir).unwrap();
+    std::fs::create_dir(&source_media_b_dir).unwrap();
     write_config(
-        temp.path(),
+        device.path(),
         &format!(
             r#"{{
                 "data_type": "ingest_and_snapshot_per_device_config",
                 "data_structure_version": {{"major": 0, "capability_level": 0}},
                 "transfers": [
-                    {{"storage_device": "{hdd_01}", "source_media": "{camera_a}", "input_path": ["/A1", "/A2"]}},
-                    {{"storage_device": "{hdd_02}", "source_media": "{camera_b}", "input_path": ["/B1", "/B2"]}}
+                    {{"storage_device": "{hdd_01}", "source_media": "{source_media_a}", "input_path": ["/A1", "/A2"]}},
+                    {{"storage_device": "{hdd_02}", "source_media": "{source_media_b}", "input_path": ["/B1", "/B2"]}}
                 ]
             }}"#,
             hdd_01 = HDD_01,
             hdd_02 = HDD_02,
-            camera_a = camera_a_dir.display(),
-            camera_b = camera_b_dir.display(),
+            source_media_a = source_media_a_dir.display(),
+            source_media_b = source_media_b_dir.display(),
         ),
     );
     let devices = vec![make_storage_device(HDD_01), make_storage_device(HDD_02)];
     let source_media = vec![
-        make_source_media_entry(camera_a_dir.clone()),
-        make_source_media_entry(camera_b_dir.clone()),
+        make_source_media_entry(source_media_a_dir.clone()),
+        make_source_media_entry(source_media_b_dir.clone()),
     ];
-    let result = load_per_device_config(temp.path(), devices, source_media).unwrap();
+    let result = load_per_device_config(device.path(), devices, source_media).unwrap();
     assert_eq!(result.len(), 4);
 
-    // First entry's two paths both belong to hdd_01 / camera_a
+    // First entry's two paths both belong to hdd_01 / source_media_a
     assert_eq!(result[0].storage_device, Some(uuid(HDD_01)));
-    assert_eq!(result[0].source_media, Some(camera_a_dir.clone()));
+    assert_eq!(result[0].source_media, Some(source_media_a_dir.clone()));
     assert_eq!(result[0].input_path, Some(PathBuf::from("/A1")));
     assert_eq!(result[1].storage_device, Some(uuid(HDD_01)));
-    assert_eq!(result[1].source_media, Some(camera_a_dir.clone()));
+    assert_eq!(result[1].source_media, Some(source_media_a_dir.clone()));
     assert_eq!(result[1].input_path, Some(PathBuf::from("/A2")));
 
-    // Second entry's two paths both belong to hdd_02 / camera_b
+    // Second entry's two paths both belong to hdd_02 / source_media_b
     assert_eq!(result[2].storage_device, Some(uuid(HDD_02)));
-    assert_eq!(result[2].source_media, Some(camera_b_dir.clone()));
+    assert_eq!(result[2].source_media, Some(source_media_b_dir.clone()));
     assert_eq!(result[2].input_path, Some(PathBuf::from("/B1")));
     assert_eq!(result[3].storage_device, Some(uuid(HDD_02)));
-    assert_eq!(result[3].source_media, Some(camera_b_dir.clone()));
+    assert_eq!(result[3].source_media, Some(source_media_b_dir.clone()));
     assert_eq!(result[3].input_path, Some(PathBuf::from("/B2")));
+}
+
+#[test]
+fn test_unhandled_dir_triggers_error() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("MISC")).unwrap();
+    write_config(device.path(), &config_with_transfers(r#"{"input_path": ["/DCIM"]}"#));
+    let result = load_per_device_config(device.path(), vec![], vec![]);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("MISC"));
+}
+
+#[test]
+fn test_unhandled_dir_check_suppressed_with_ignore_flag() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("MISC")).unwrap();
+    write_config(
+        device.path(),
+        &config_with_extra_fields(
+            r#""ignore_unhandled_dirs": true"#,
+            r#"{"input_path": ["/DCIM"]}"#,
+        ),
+    );
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_unhandled_dir_suppressed_via_ignored_dirs() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("MISC")).unwrap();
+    write_config(
+        device.path(),
+        &config_with_extra_fields(
+            r#""ignored_dirs": ["MISC"]"#,
+            r#"{"input_path": ["/DCIM"]}"#,
+        ),
+    );
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_ignored_dirs_accepts_leading_slash() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("MISC")).unwrap();
+    write_config(
+        device.path(),
+        &config_with_extra_fields(
+            r#""ignored_dirs": ["/MISC"]"#,
+            r#"{"input_path": ["/DCIM"]}"#,
+        ),
+    );
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_root_transfer_skips_unhandled_dir_check() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("MISC")).unwrap();
+    // No input_path means root transfer — check must not fire.
+    write_config(device.path(), &config_with_transfers("{}"));
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_all_dirs_covered_passes_check() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::create_dir(device.path().join("PRIVATE")).unwrap();
+    write_config(
+        device.path(),
+        &config_with_transfers(r#"{"input_path": ["/DCIM", "/PRIVATE"]}"#),
+    );
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_files_in_device_root_are_not_flagged_as_unhandled() {
+    let device = tempfile::tempdir().unwrap();
+    std::fs::create_dir(device.path().join("DCIM")).unwrap();
+    std::fs::write(device.path().join("AUTRUN.INF"), b"data").unwrap();
+    write_config(device.path(), &config_with_transfers(r#"{"input_path": ["/DCIM"]}"#));
+    assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
 }

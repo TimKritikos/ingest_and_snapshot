@@ -17,6 +17,7 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -52,6 +53,10 @@ struct PerDeviceConfigTransferEntry {
 struct PerDeviceConfigRaw {
     #[serde(default)]
     transfers: Vec<PerDeviceConfigTransferEntry>,
+    #[serde(default)]
+    ignore_unhandled_dirs: Option<bool>,
+    #[serde(default)]
+    ignored_dirs: Option<Vec<String>>,
 }
 
 /// A single resolved transfer specification from a per-device config file.
@@ -67,6 +72,72 @@ pub struct PerDeviceTransferOverride {
     pub storage_device: Option<Uuid>,
     /// Input path relative to the device root (always starts with `/`), if specified.
     pub input_path: Option<PathBuf>,
+}
+
+fn check_for_unhandled_dirs(
+    mountpoint: &Path,
+    overrides: &[PerDeviceTransferOverride],
+    ignored_dirs: &[String],
+) -> Result<(), String> {
+    // A root transfer (no specific input_path) covers everything — skip the check.
+    if overrides.iter().any(|o| o.input_path.is_none()) {
+        return Ok(());
+    }
+
+    // Nothing configured at all — nothing to check.
+    if overrides.is_empty() {
+        return Ok(());
+    }
+
+    // Collect the top-level directory name from each input_path.
+    let covered_dirs: HashSet<String> = overrides
+        .iter()
+        .filter_map(|o| o.input_path.as_ref())
+        .filter_map(|path| {
+            path.components()
+                .find(|c| matches!(c, std::path::Component::Normal(_)))
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        })
+        .collect();
+
+    // Accept ignored_dirs with or without a leading slash.
+    let normalized_ignored: HashSet<String> = ignored_dirs
+        .iter()
+        .map(|d| d.trim_start_matches('/').to_string())
+        .collect();
+
+    let entries = std::fs::read_dir(mountpoint)
+        .map_err(|e| format!("Failed to read mountpoint for unhandled-dir check: {}", e))?;
+
+    let mut unhandled = Vec::new();
+    for entry_result in entries {
+        let entry = entry_result
+            .map_err(|e| format!("Failed to read mountpoint entry: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to get file type of mountpoint entry: {}", e))?;
+
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !covered_dirs.contains(&name) && !normalized_ignored.contains(&name) {
+            unhandled.push(name);
+        }
+    }
+
+    if !unhandled.is_empty() {
+        unhandled.sort();
+        return Err(format!(
+            "Source device has subdirectories not covered by any transfer entry: {}. \
+             Add them to the transfers list, add them to ignored_dirs, \
+             or set ignore_unhandled_dirs to true to suppress this check.",
+            unhandled.join(", ")
+        ));
+    }
+
+    Ok(())
 }
 
 /// Reads and parses the config file from the root of `mountpoint`.
@@ -161,6 +232,11 @@ pub fn load_per_device_config(
                 }
             }
         }
+    }
+
+    if !config.ignore_unhandled_dirs.unwrap_or(false) {
+        let ignored = config.ignored_dirs.unwrap_or_default();
+        check_for_unhandled_dirs(mountpoint, &overrides, &ignored)?;
     }
 
     Ok(overrides)
