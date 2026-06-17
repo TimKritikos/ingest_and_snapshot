@@ -92,11 +92,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
     let actions_window_content = actions_window.inner(area);
 
     let list_height = 6u16.min(actions_window_content.height);
+    let list_width = 50u16.min(actions_window_content.width);
     let list_y = actions_window_content.y + (actions_window_content.height.saturating_sub(list_height)) / 2;
     let list_area = Rect {
-        x: actions_window_content.x + actions_window_content.width / 2 - 25,
+        x: actions_window_content.x + actions_window_content.width.saturating_sub(list_width) / 2,
         y: list_y,
-        width: 50,
+        width: list_width,
         height: list_height,
     };
 

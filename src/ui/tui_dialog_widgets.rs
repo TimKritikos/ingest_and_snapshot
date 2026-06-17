@@ -72,7 +72,7 @@ impl Widget for DialogSelectionList<'_> {
         }
 
         // Write the box
-        if area.height < 3 { return; }
+        if area.height < 3 || area.width < 2 { return; }
         let box_area = Rect {
             x: area.x,
             y: area.y + 1,
@@ -170,6 +170,7 @@ impl<'a> DialogBlock<'a> {
 
 impl Widget for DialogBlock<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width < 2 || area.height < 2 { return; }
 
         let light = Style::default().fg(Color::White).bg(self.style.bg.unwrap_or(Color::Gray));
         let dark = Style::default().fg(Color::DarkGray).bg(self.style.bg.unwrap_or(Color::Gray));
@@ -399,6 +400,7 @@ impl<'a> DialogFloatingList<'a> {
 
 impl Widget for DialogFloatingList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width < 6 || area.height < 6 { return; }
         let hint_rows: u16 = if self.hint.is_some() { 1 } else { 0 };
         let picker_h = (self.items.len() as u16 + hint_rows + 2)
             .max(5)
