@@ -368,25 +368,40 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
             }
         }
         Some(UserQuery::SnapshotName(query)) => {
-            let entry = state.snapshot_name_entry.get_or_insert_with(|| TextEntryState::new(String::new()));
-            match entry.handle_key(key.code) {
-                TextEntryOutcome::Confirmed(name) => {
-                    let _ = query.response_tx.send(SnapshotNameResponse::Provided(name));
-                    state.snapshot_name_entry = None;
-                    state.query_queue.pop_front();
+            if let Some(entry) = state.snapshot_name_entry.as_mut() {
+                match entry.handle_key(key.code) {
+                    TextEntryOutcome::Confirmed(name) => {
+                        let _ = query.response_tx.send(SnapshotNameResponse::Provided(name));
+                        state.snapshot_name_entry = None;
+                        state.query_queue.pop_front();
+                    }
+                    TextEntryOutcome::Cancelled => {
+                        let _ = query.response_tx.send(SnapshotNameResponse::Cancelled);
+                        state.snapshot_name_entry = None;
+                        state.query_queue.pop_front();
+                    }
+                    TextEntryOutcome::Editing => {}
                 }
-                TextEntryOutcome::Cancelled => {
-                    let _ = query.response_tx.send(SnapshotNameResponse::Cancelled);
-                    state.snapshot_name_entry = None;
-                    state.query_queue.pop_front();
-                }
-                TextEntryOutcome::Editing => {}
             }
         }
         None => {}
     }
 }
 
+/// Ensures entry states are consistent with the query currently at the front of the queue.
+/// Call this whenever the front of the queue may have changed (after a push or after a pop
+/// resets the window state). `snapshot_name_entry` must be `Some` for the duration of a
+/// `SnapshotName` query so that the 'f' shortcut guard in ui.rs can reliably detect it.
+pub fn prepare_for_front_query(state: &mut QueryWindowState) {
+    match state.query_queue.front() {
+        Some(UserQuery::SnapshotName(_)) => {
+            state.snapshot_name_entry.get_or_insert_with(|| TextEntryState::new(String::new()));
+        }
+        _ => {
+            state.snapshot_name_entry = None;
+        }
+    }
+}
 
 pub fn render(
     frame: &mut Frame,
