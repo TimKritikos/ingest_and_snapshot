@@ -29,6 +29,7 @@ const BACKUP_LOG_CAPABILITY_LEVEL: u32 = 0;
 pub const BACKUP_LOG_DATA_DIR_NAME: &str = "backup_log_data";
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BackupLogStructureVersion {
     pub major: u32,
     pub capability_level: u32,
@@ -42,6 +43,7 @@ struct BackupLogHeader {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BackupLogTransferEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_uuidv7: Option<String>,
@@ -80,6 +82,7 @@ pub struct BackupLogTransferEntry {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BackupLogEntry {
     pub data_type: String,
     pub data_structure_version: BackupLogStructureVersion,

@@ -28,6 +28,7 @@ pub const PER_DEVICE_CONFIG_MAJOR: u32 = 0;
 pub const PER_DEVICE_CONFIG_CAPABILITY_LEVEL: u32 = 0;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructureVersion {
     pub major: u32,
     pub capability_level: u32,
@@ -40,6 +41,7 @@ struct PerDeviceConfigHeader {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PerDeviceConfigTransferEntry {
     #[serde(default)]
     source_media: Option<PathBuf>,
@@ -50,7 +52,12 @@ struct PerDeviceConfigTransferEntry {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PerDeviceConfigRaw {
+    #[allow(dead_code)]
+    data_type: String,
+    #[allow(dead_code)]
+    data_structure_version: StructureVersion,
     #[serde(default)]
     transfers: Vec<PerDeviceConfigTransferEntry>,
     #[serde(default)]
