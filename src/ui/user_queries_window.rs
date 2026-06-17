@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
-use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse};
+use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse, SnapshotNameResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 use crate::transfer_logic::TransferFields;
 
@@ -31,6 +31,8 @@ pub struct QueryWindowState {
     pub input_path_picker_mount_root: Option<PathBuf>,
     /// Entries in the current picker directory: (display label, actual OS path, is_dir).
     pub input_path_picker_entries: Vec<(String, PathBuf, bool)>,
+    /// Text entry buffer for the snapshot-name query, lazily created when that query is shown.
+    pub snapshot_name_entry: Option<TextEntryState>,
 }
 
 impl QueryWindowState {
@@ -50,6 +52,7 @@ impl QueryWindowState {
             input_path_picker_current_dir: None,
             input_path_picker_mount_root: None,
             input_path_picker_entries: Vec::new(),
+            snapshot_name_entry: None,
         }
     }
 }
@@ -364,6 +367,22 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                 _ => {}
             }
         }
+        Some(UserQuery::SnapshotName(query)) => {
+            let entry = state.snapshot_name_entry.get_or_insert_with(|| TextEntryState::new(String::new()));
+            match entry.handle_key(key.code) {
+                TextEntryOutcome::Confirmed(name) => {
+                    let _ = query.response_tx.send(SnapshotNameResponse::Provided(name));
+                    state.snapshot_name_entry = None;
+                    state.query_queue.pop_front();
+                }
+                TextEntryOutcome::Cancelled => {
+                    let _ = query.response_tx.send(SnapshotNameResponse::Cancelled);
+                    state.snapshot_name_entry = None;
+                    state.query_queue.pop_front();
+                }
+                TextEntryOutcome::Editing => {}
+            }
+        }
         None => {}
     }
 }
@@ -428,7 +447,39 @@ pub fn render(
         UserQuery::NoInputPathWarning(_) => render_no_input_path_warning(frame, padded),
         UserQuery::NewBackupLog(query) => render_new_backup_log(frame, padded, query),
         UserQuery::CardIdInLogWarning(query) => render_card_id_in_log_warning(frame, padded, query),
+        UserQuery::SnapshotName(_) => {
+            render_snapshot_name_prompt(frame, padded);
+            // The text entry floats over the whole screen, mirroring the card-ID entry.
+            let (text, cursor): (&str, usize) = match &state.snapshot_name_entry {
+                Some(entry) => (&entry.text, entry.cursor),
+                None        => ("", 0),
+            };
+            tui_dialog_widgets::TextEntry {
+                title: "Snapshot name",
+                text,
+                cursor_pos: cursor,
+            }.render(frame.area(), frame.buffer_mut());
+        }
     }
+}
+
+fn render_snapshot_name_prompt(frame: &mut Frame, area: Rect) {
+    let title = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let label = Style::default().fg(Color::Black);
+    let lines = vec![
+        Line::from(vec![Span::styled("Finish backup and create snapshot", title)]),
+        Line::from(""),
+        Line::from(vec![Span::styled("Enter a name for this snapshot. It is combined with today's", label)]),
+        Line::from(vec![Span::styled("date as YYYY-MM-DD_<name> to form the ZFS snapshot name.", label)]),
+    ];
+    let content_height = lines.len() as u16;
+    let y_offset = area.height.saturating_sub(content_height) / 2;
+    let centered = Rect {
+        y:      area.y + y_offset,
+        height: content_height.min(area.height),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), centered);
 }
 
 fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {

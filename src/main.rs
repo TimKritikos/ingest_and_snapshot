@@ -44,6 +44,7 @@ mod transfer_registry;
 mod mount_manager;
 mod backup_log;
 mod per_device_config;
+mod snapshot_logic;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -151,6 +152,12 @@ struct MainConfig {
     data_structure_version: String,
     allow_device_list: Vec<String>,
     ignore_device_list: Vec<String>,
+    /// Optional executable run after a snapshot's check passes (or is kept by completing early).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_success_callback: Option<String>,
+    /// Optional executable run after a snapshot's check fails, before the keep/destroy prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_failure_callback: Option<String>,
 }
 
 fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
@@ -167,6 +174,8 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
             data_structure_version: "v0.0".to_string(),
             allow_device_list: [].to_vec(),
             ignore_device_list: [].to_vec(),
+            snapshot_success_callback: None,
+            snapshot_failure_callback: None,
         };
 
         let mut config_file = File::create(config_file_path)?;
@@ -365,18 +374,23 @@ fn device_filter(device: &udev::Device, allow_list: &[String], ignore_list: &[St
 
 /// Atomically writes the config to disk by writing a temp file then renaming it over the target.
 /// This ensures the config file is never left in an invalid state even if the process is killed.
+#[allow(clippy::too_many_arguments)]
 fn write_config_atomically(
     config_file_path: &Path,
     data_type: &str,
     data_structure_version: &str,
     allow_device_list: &[String],
     ignore_device_list: &[String],
+    snapshot_success_callback: &Option<String>,
+    snapshot_failure_callback: &Option<String>,
 ) -> anyhow::Result<()> {
     let config = MainConfig {
         data_type: data_type.to_string(),
         data_structure_version: data_structure_version.to_string(),
         allow_device_list: allow_device_list.to_vec(),
         ignore_device_list: ignore_device_list.to_vec(),
+        snapshot_success_callback: snapshot_success_callback.clone(),
+        snapshot_failure_callback: snapshot_failure_callback.clone(),
     };
     let json = serde_json::to_string_pretty(&config)?;
     let temp_path = config_file_path.with_extension("tmp");
@@ -427,7 +441,8 @@ fn main() {
     let config = parse_config_file(config_file_path.clone()).unwrap();
 
     let (ui_to_logic_tx, ui_to_logic_rx) = crossbeam_channel::unbounded::<ui_api::UiToLogicMessage>();
-    let tui_backend = ui::TuiBackend::new(ui_to_logic_tx);
+    // The snapshot thread keeps a clone so it can request a complete-backup-and-exit teardown.
+    let tui_backend = ui::TuiBackend::new(ui_to_logic_tx.clone());
 
     let mut ui: Arc<Mutex<Box<dyn ui_api::UiBackend>>> = Arc::new(Mutex::new(Box::new(tui_backend)));
 
@@ -438,6 +453,9 @@ fn main() {
     let config_data_structure_version = config.data_structure_version;
     let mut allow_device_list: Vec<String> = config.allow_device_list;
     let mut ignore_device_list: Vec<String> = config.ignore_device_list;
+    // Snapshot callbacks are not mutated at runtime, but must be preserved on every config rewrite.
+    let snapshot_success_callback = config.snapshot_success_callback;
+    let snapshot_failure_callback = config.snapshot_failure_callback;
     // Runtime allow list starts as a copy of the persisted list; session-only entries
     // (AllowOnce) are added here but never written to the config file.
     let mut runtime_allow_list: Vec<String> = allow_device_list.clone();
@@ -691,7 +709,7 @@ fn main() {
                 ui_api::UnknownDeviceResponse::AddToAllowList => {
                     allow_device_list.push(by_id_name.clone());
                     runtime_allow_list.push(by_id_name.clone());
-                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
                         eprintln!("Failed to persist config change: {}", e);
                     }
                     syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
@@ -703,7 +721,7 @@ fn main() {
                 }
                 ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                     ignore_device_list.push(by_id_name.clone());
-                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
                         eprintln!("Failed to persist config change: {}", e);
                     }
                 }
@@ -792,6 +810,27 @@ fn main() {
                         Arc::clone(&ui),
                     );
                 }
+                ui_api::UiToLogicMessage::StartSnapshot => {
+                    // Tracked alongside transfer handles so a clean shutdown waits for it too.
+                    transfer_handles.lock().unwrap().push(snapshot_logic::spawn_snapshot(
+                        Arc::clone(&ui),
+                        media_dir.clone(),
+                        snapshot_logic::SnapshotConfig {
+                            success_callback: snapshot_success_callback.clone(),
+                            failure_callback: snapshot_failure_callback.clone(),
+                        },
+                        Arc::clone(&backup_log_manager),
+                        ui_to_logic_tx.clone(),
+                    ));
+                }
+                ui_api::UiToLogicMessage::CompleteBackupAndExit => {
+                    // The snapshot workflow already marked the backup log complete; finish the same
+                    // way "Unmount and exit" does. The snapshot was only offered when no transfers
+                    // were active, so there is nothing to interrupt here.
+                    mount_manager.lock().unwrap().unmount_all_sync();
+                    ui.lock().unwrap().quit().unwrap();
+                    break 'outer;
+                }
             }
         }
 
@@ -821,7 +860,7 @@ fn main() {
                             ui_api::UnknownDeviceResponse::AddToAllowList => {
                                 allow_device_list.push(by_id_name.clone());
                                 runtime_allow_list.push(by_id_name.clone());
-                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
                                     eprintln!("Failed to persist config change: {}", e);
                                 }
                                 syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
@@ -833,7 +872,7 @@ fn main() {
                             }
                             ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                                 ignore_device_list.push(by_id_name.clone());
-                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list) {
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
                                     eprintln!("Failed to persist config change: {}", e);
                                 }
                             }

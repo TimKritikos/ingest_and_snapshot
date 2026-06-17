@@ -191,6 +191,13 @@ impl BackupLogManager {
         self.entry.new_transfers.iter().any(|t| t.card_path == card_path)
     }
 
+    /// Marks this backup log entry as a completed backup and flushes to disk atomically.
+    /// A new entry is started on the next program run once an entry is marked complete.
+    pub fn complete_backup(&mut self) -> Result<(), String> {
+        self.entry.completed_backup = true;
+        self.flush()
+    }
+
     /// Appends samples to an existing transfer record and flushes to disk atomically.
     /// Identified by `card_path`; silently does nothing if no matching transfer is found.
     pub fn update_transfer_samples(&mut self, card_path: &Path, new_samples: Vec<TransferSample>) -> Result<(), String> {

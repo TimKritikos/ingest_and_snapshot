@@ -392,11 +392,65 @@ pub fn run() -> ! {
         thread::sleep(time::Duration::from_millis(50));
         if let Ok(msg) = ui_to_logic_rx.try_recv() {
             match msg {
-                ui_api::UiToLogicMessage::Quit => {
+                ui_api::UiToLogicMessage::Quit |
+                ui_api::UiToLogicMessage::CompleteBackupAndExit => {
                     drop(cancel_senders);
                     break;
                 }
                 ui_api::UiToLogicMessage::UnmountRequest(_) => {}
+                ui_api::UiToLogicMessage::StartSnapshot => {
+                    // Dummy mode cannot touch ZFS, so this simulates the check-terminal flow:
+                    // it asks for a name, then streams scripted output exercising SGR colours and
+                    // cursor-movement control codes before offering a "Return" button.
+                    let ui_for_snapshot = Arc::clone(&ui);
+                    thread::spawn(move || {
+                        const RETURN_ACTION_ID: u32 = 5;
+
+                        let (name_tx, name_rx) = crossbeam_channel::unbounded::<ui_api::SnapshotNameResponse>();
+                        if ui_for_snapshot.lock().unwrap().user_query(
+                            ui_api::UserQuery::SnapshotName(ui_api::SnapshotNameQuery { response_tx: name_tx }),
+                            false,
+                        ).is_err() { return; }
+                        let message = match name_rx.recv() {
+                            Ok(ui_api::SnapshotNameResponse::Provided(message)) => message,
+                            _ => return,
+                        };
+
+                        let (updates_tx, updates_rx) = crossbeam_channel::unbounded::<ui_api::SnapshotUpdate>();
+                        let (action_tx, action_rx)   = crossbeam_channel::unbounded::<u32>();
+                        if ui_for_snapshot.lock().unwrap().start_check_terminal(updates_rx, action_tx).is_err() { return; }
+
+                        let send = |bytes: Vec<u8>| { let _ = updates_tx.send(ui_api::SnapshotUpdate::Terminal(bytes)); };
+
+                        send(format!("\r\n\x1b[36mGenerating snapshot temp_{} ...\x1b[0m\r\n", message).into_bytes());
+                        send(b"\r\n\x1b[36mExecuting check program (dummy) ...\x1b[0m\r\n\r\n".to_vec());
+                        for file_number in 1..=5 {
+                            thread::sleep(time::Duration::from_millis(400));
+                            send(format!("Checking file {} ... \x1b[32mOK\x1b[0m\r\n", file_number).into_bytes());
+                        }
+                        // Demonstrate cursor moves: go up two lines, forward 20 columns, overwrite.
+                        thread::sleep(time::Duration::from_millis(400));
+                        send(b"\x1b[2A\x1b[20C\x1b[33m<- revisited\x1b[0m\x1b[2B\r\n".to_vec());
+
+                        let _ = updates_tx.send(ui_api::SnapshotUpdate::SetActions(vec![
+                            ui_api::SnapshotActionButton {
+                                id: RETURN_ACTION_ID,
+                                label: "Return to main screen".to_string(),
+                                style: ui_api::SnapshotActionStyle::Confirm,
+                            },
+                        ]));
+                        send(b"\r\n\x1b[32mDone (dummy). Select \"Return to main screen\".\x1b[0m\r\n".to_vec());
+
+                        loop {
+                            match action_rx.recv() {
+                                Ok(RETURN_ACTION_ID) => break,
+                                Ok(_) => {}
+                                Err(_) => return,
+                            }
+                        }
+                        let _ = updates_tx.send(ui_api::SnapshotUpdate::Exit);
+                    });
+                }
                 ui_api::UiToLogicMessage::StartManualTransfer => {
                     let (transfer_event_tx, transfer_event_rx) = crossbeam_channel::unbounded::<ui_api::TransferEvent>();
                     ui.lock().unwrap().new_transfer(

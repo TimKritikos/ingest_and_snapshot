@@ -170,6 +170,19 @@ pub enum CardIdInLogWarningResponse {
     Cancel,
 }
 
+/// Asks the user for the free-form message that becomes part of the snapshot name. Issued by the
+/// snapshot logic thread right after the user chooses "Finish backup and do snapshot".
+pub struct SnapshotNameQuery {
+    pub response_tx: Sender<SnapshotNameResponse>,
+}
+
+pub enum SnapshotNameResponse {
+    /// The user confirmed the snapshot message (the free-form part of the snapshot name).
+    Provided(String),
+    /// The user cancelled before providing a name; no snapshot should be created.
+    Cancelled,
+}
+
 pub enum UserQuery {
     ApproveTransfer(Box<ApproveTransferQuery>),
     UnknownDevice(UnknownDeviceQuery),
@@ -182,6 +195,36 @@ pub enum UserQuery {
     NoInputPathWarning(NoInputPathWarningQuery),
     NewBackupLog(NewBackupLogQuery),
     CardIdInLogWarning(CardIdInLogWarningQuery),
+    SnapshotName(SnapshotNameQuery),
+}
+
+/// Visual styling hint for a snapshot action button, so destructive vs. confirming choices read
+/// differently in the actions window.
+#[derive(Clone, Copy)]
+pub enum SnapshotActionStyle {
+    /// A safe / completing action (e.g. keep the snapshot, return to the main screen).
+    Confirm,
+    /// A destructive action (e.g. destroy the snapshot).
+    Danger,
+}
+
+/// One selectable action presented in the snapshot-mode actions window. The `id` is echoed back
+/// through the action channel when the user picks it, so the snapshot logic knows what was chosen.
+#[derive(Clone)]
+pub struct SnapshotActionButton {
+    pub id: u32,
+    pub label: String,
+    pub style: SnapshotActionStyle,
+}
+
+/// Updates pushed from the snapshot logic thread to the snapshot-mode UI.
+pub enum SnapshotUpdate {
+    /// Raw bytes (check program stdout/stderr, or status messages) to feed the terminal emulator.
+    Terminal(Vec<u8>),
+    /// Replace the set of action buttons currently offered to the user.
+    SetActions(Vec<SnapshotActionButton>),
+    /// Leave snapshot mode and return to the normal layout.
+    Exit,
 }
 
 /// Messages the UI sends back to the main logic.
@@ -189,6 +232,10 @@ pub enum UiToLogicMessage {
     Quit,
     StartManualTransfer,
     UnmountRequest(MountId),
+    StartSnapshot,
+    /// Mark the current backup as complete, then unmount everything and exit, as the snapshot
+    /// workflow requests after a successful check.
+    CompleteBackupAndExit,
 }
 
 /// Returned when a UiBackend method fails because the backend is no longer reachable.
@@ -243,6 +290,10 @@ pub trait UiBackend: Send {
     fn user_query(&mut self, query: UserQuery, priority: bool) -> Result<(), UiError>;
     fn mount_update(&mut self, update: MountUpdate) -> Result<(), UiError>;
     fn system_info(&mut self, info: SystemInfo) -> Result<(), UiError>;
+    /// Switches the UI into the check-terminal layout: a transfers/terminal/actions layout that
+    /// streams the check program's output (`updates_rx`) and reports the user's button choices
+    /// (`action_tx`).
+    fn start_check_terminal(&mut self, updates_rx: Receiver<SnapshotUpdate>, action_tx: Sender<u32>) -> Result<(), UiError>;
     fn quit(&mut self) -> Result<(), UiError>;
     /// Block until the backend has fully shut down. Should be called after quit().
     fn join(self: Box<Self>);

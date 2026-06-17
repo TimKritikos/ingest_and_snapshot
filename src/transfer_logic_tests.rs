@@ -20,6 +20,7 @@ mod tests {
         fn new_transfer(&mut self, _: Option<String>, _: crossbeam_channel::Receiver<ui_api::TransferEvent>) -> Result<(), UiError> { Ok(()) }
         fn mount_update(&mut self, _: ui_api::MountUpdate) -> Result<(), UiError> { Ok(()) }
         fn system_info(&mut self, _: ui_api::SystemInfo) -> Result<(), UiError> { Ok(()) }
+        fn start_check_terminal(&mut self, _: crossbeam_channel::Receiver<ui_api::SnapshotUpdate>, _: crossbeam_channel::Sender<u32>) -> Result<(), UiError> { Ok(()) }
         fn quit(&mut self) -> Result<(), UiError> { Ok(()) }
         fn join(self: Box<Self>) {}
 

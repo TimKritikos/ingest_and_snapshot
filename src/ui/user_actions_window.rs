@@ -12,16 +12,18 @@ pub enum SelectedAction {
 
 pub struct ActionsWindowState {
     pub selected: SelectedAction,
-    /// When true the "Unmount and exit" option is greyed out and unselectable because
-    /// transfers are still running. Ignored when the `disable-ui-safety-checks` feature is set.
-    pub quit_disabled: bool,
+    /// When true, transfers are still running, so the options that must wait for copying to finish
+    /// — "Unmount and exit" (don't stop a transfer midway) and "Finish backup and do snapshot"
+    /// (don't snapshot before the copy is done) — are greyed out and unselectable. Ignored when the
+    /// `disable-ui-safety-checks` feature is set.
+    pub transfers_in_progress: bool,
 }
 
 impl ActionsWindowState {
     pub fn new() -> Self {
         Self {
             selected: SelectedAction::Quit,
-            quit_disabled: false,
+            transfers_in_progress: false,
         }
     }
 }
@@ -29,6 +31,7 @@ impl ActionsWindowState {
 pub enum ActionsWindowEvent {
     Quit,
     StartManualTransfer,
+    StartSnapshot,
 }
 
 pub fn handle_key(state: &mut ActionsWindowState, key: KeyEvent) -> Option<ActionsWindowEvent> {
@@ -48,13 +51,11 @@ pub fn handle_key(state: &mut ActionsWindowState, key: KeyEvent) -> Option<Actio
             };
         }
         KeyCode::Enter => {
+            let blocked_by_transfers = !cfg!(feature = "disable-ui-safety-checks") && state.transfers_in_progress;
             return match state.selected {
-                SelectedAction::Quit => {
-                    let blocked = !cfg!(feature = "disable-ui-safety-checks") && state.quit_disabled;
-                    if blocked { None } else { Some(ActionsWindowEvent::Quit) }
-                }
+                SelectedAction::Quit     => if blocked_by_transfers { None } else { Some(ActionsWindowEvent::Quit) },
+                SelectedAction::Snapshot => if blocked_by_transfers { None } else { Some(ActionsWindowEvent::StartSnapshot) },
                 SelectedAction::ManualTransfer => Some(ActionsWindowEvent::StartManualTransfer),
-                SelectedAction::Snapshot       => None,
             };
         }
         _ => {}
@@ -69,8 +70,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
 
     if minimise { return; }
 
-    let quit_visually_disabled =
-        !cfg!(feature = "disable-ui-safety-checks") && state.quit_disabled;
+    // "Unmount and exit" (index 0) and "Finish backup and do snapshot" (index 2) are both unsafe
+    // while transfers are still running.
+    let unsafe_actions_disabled =
+        !cfg!(feature = "disable-ui-safety-checks") && state.transfers_in_progress;
 
     let list = tui_dialog_widgets::DialogSelectionList::new(vec![
         "Unmount and exit",
@@ -83,7 +86,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ActionsWindowState, focused
             SelectedAction::ManualTransfer => 1,
             SelectedAction::Snapshot       => 2,
         }))
-        .disabled_indices(if quit_visually_disabled { vec![0] } else { vec![] })
+        .disabled_indices(if unsafe_actions_disabled { vec![0, 2] } else { vec![] })
         .focused(focused);
 
     let actions_window_content = actions_window.inner(area);

@@ -17,11 +17,13 @@ mod transfers_window;
 mod user_queries_window;
 mod user_actions_window;
 mod mount_list_overlay;
+mod check_terminal_window;
 
 use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
+use check_terminal_window::CheckTerminalState;
 use crate::ui_api::{
     TransferSample, TransferEvent, UserQuery, UiToLogicMessage, UiError,
-    MountEntryStatus, MountUpdate, LoadingField, SystemInfo,
+    MountEntryStatus, MountUpdate, LoadingField, SystemInfo, SnapshotUpdate,
 };
 use crate::ui_api::UiBackend;
 
@@ -51,6 +53,7 @@ enum LogicToUiMessage {
     UserQuery { query: UserQuery, priority: bool },
     MountUpdate(MountUpdate),
     SystemInfo(SystemInfo),
+    StartCheckTerminal { updates_rx: Receiver<SnapshotUpdate>, action_tx: Sender<u32> },
     Quit,
 }
 
@@ -90,6 +93,9 @@ impl UiBackend for TuiBackend {
     fn system_info(&mut self, info: SystemInfo) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::SystemInfo(info)).map_err(|_| UiError::Disconnected)
     }
+    fn start_check_terminal(&mut self, updates_rx: Receiver<SnapshotUpdate>, action_tx: Sender<u32>) -> Result<(), UiError> {
+        self.tx.send(LogicToUiMessage::StartCheckTerminal { updates_rx, action_tx }).map_err(|_| UiError::Disconnected)
+    }
     fn quit(&mut self) -> Result<(), UiError> {
         self.tx.send(LogicToUiMessage::Quit).map_err(|_| UiError::Disconnected)
     }
@@ -106,6 +112,8 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut actions_state = ActionsWindowState::new();
     let mut query_state = user_queries_window::QueryWindowState::new();
     let mut mount_list_state = mount_list_overlay::MountListState::new();
+    // `Some` only while the check terminal (snapshot mode) is active, replacing the normal layout.
+    let mut check_terminal_state: Option<CheckTerminalState> = None;
     #[cfg(feature = "fps-counter")]
     let mut frame_times: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     #[cfg(feature = "fps-counter")]
@@ -146,12 +154,15 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
             }
         }
 
-        // Keep the "Unmount and exit" option greyed out while any transfer is running.
+        // Keep the "Unmount and exit" and "Finish backup and do snapshot" options greyed out while
+        // any transfer is running.
         #[cfg(not(feature = "disable-ui-safety-checks"))]
         {
             let transfers_active = has_active_ui_transfers(&transfers);
-            actions_state.quit_disabled = transfers_active;
-            if transfers_active && matches!(actions_state.selected, user_actions_window::SelectedAction::Quit) {
+            actions_state.transfers_in_progress = transfers_active;
+            // Starting another transfer is the only option that stays safe mid-transfer, so steer
+            // the selection there if it is resting on a now-disabled option.
+            if transfers_active && !matches!(actions_state.selected, user_actions_window::SelectedAction::ManualTransfer) {
                 actions_state.selected = user_actions_window::SelectedAction::ManualTransfer;
             }
         }
@@ -160,6 +171,14 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         if let Some(UserQuery::ApproveTransfer(latest_query)) = query_state.query_queue.front_mut() {
             if let Ok(update) = latest_query.update_rx.try_recv() {
                 latest_query.fields = update;
+            }
+        }
+
+        // Drain any check-terminal updates (output bytes / action changes) the logic has pushed.
+        // When the logic signals it is done, leave check-terminal mode and restore the normal layout.
+        if let Some(state) = check_terminal_state.as_mut() {
+            if state.drain_updates() {
+                check_terminal_state = None;
             }
         }
 
@@ -174,7 +193,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
         };
 
         terminal.draw(|frame| {
-            render(frame, &actions_state, &query_state, &transfers, available_devices.as_deref(), current_system_info.as_ref(), &mount_list_state,
+            render(frame, &actions_state, &query_state, &transfers, available_devices.as_deref(), current_system_info.as_ref(), &mount_list_state, check_terminal_state.as_mut(),
                 #[cfg(feature = "fps-counter")] fps,
             )
         })?;
@@ -210,6 +229,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                 }
                 LogicToUiMessage::SystemInfo(info) => {
                     current_system_info = Some(info);
+                }
+                LogicToUiMessage::StartCheckTerminal { updates_rx, action_tx } => {
+                    check_terminal_state = Some(CheckTerminalState::new(updates_rx, action_tx));
                 }
                 LogicToUiMessage::MountUpdate(update) => {
                     match update {
@@ -258,6 +280,9 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                     }
                     None => {}
                 }
+            } else if let Some(state) = check_terminal_state.as_mut() {
+                // While the check terminal owns the screen it captures all non-mount-list keys.
+                state.handle_key(key);
             } else if !query_state.query_queue.is_empty() {
                 let prev_len = query_state.query_queue.len();
                 user_queries_window::handle_key(&mut query_state, key, available_devices.as_deref());
@@ -270,6 +295,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
                 match user_actions_window::handle_key(&mut actions_state, key) {
                     Some(ActionsWindowEvent::Quit)                => tx.send(UiToLogicMessage::Quit).unwrap(),
                     Some(ActionsWindowEvent::StartManualTransfer) => tx.send(UiToLogicMessage::StartManualTransfer).unwrap(),
+                    Some(ActionsWindowEvent::StartSnapshot)       => tx.send(UiToLogicMessage::StartSnapshot).unwrap(),
                     None => {}
                 }
             }
@@ -312,6 +338,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     frame: &mut Frame,
     actions_state: &ActionsWindowState,
@@ -320,6 +347,7 @@ fn render(
     available_devices: Option<&[SourceMediaEntry]>,
     system_info: Option<&SystemInfo>,
     mount_list_state: &mount_list_overlay::MountListState,
+    check_terminal_state: Option<&mut CheckTerminalState>,
     #[cfg(feature = "fps-counter")] fps: f64
     ) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
@@ -336,12 +364,23 @@ fn render(
 
     let current_query = query_state.query_queue.front();
     let show_user_queries = current_query.is_some();
+    // The check terminal (snapshot mode) takes over the middle window when active.
+    let show_check_terminal = check_terminal_state.is_some();
 
     let windows = Layout::default()
         .direction(Direction::Vertical)
         .horizontal_margin(4)
         .vertical_margin(2)
-        .constraints(if show_user_queries {
+        .constraints(if show_check_terminal {
+            // 35% transfers, 65% check terminal, and a 3-line actions window (with gaps between).
+            vec![
+                Constraint::Percentage(35),
+                Constraint::Length(3),
+                Constraint::Percentage(65),
+                Constraint::Length(3),
+                Constraint::Length(3),
+            ]
+        } else if show_user_queries {
             vec![
                 Constraint::Percentage(100),
                 Constraint::Length(3),
@@ -367,12 +406,20 @@ fn render(
     transfers_window::render(frame, windows[window_index], transfers, available_devices);
     window_index += 2;
 
-    if show_user_queries {
-        user_queries_window::render(frame, windows[window_index], query_state, available_devices);
+    if let Some(state) = check_terminal_state {
+        // The check-terminal window holds both the display-only terminal and its own action
+        // buttons. The normal actions window below is left unmodified (minimised, like query mode).
+        check_terminal_window::render(frame, windows[window_index], state);
         window_index += 2;
-    }
+        user_actions_window::render(frame, windows[window_index], actions_state, false, true);
+    } else {
+        if show_user_queries {
+            user_queries_window::render(frame, windows[window_index], query_state, available_devices);
+            window_index += 2;
+        }
 
-    user_actions_window::render(frame, windows[window_index], actions_state, !show_user_queries, show_user_queries);
+        user_actions_window::render(frame, windows[window_index], actions_state, !show_user_queries, show_user_queries);
+    }
 
     // Mount list overlay — rendered last so it appears on top of all other content.
     if mount_list_state.open {
