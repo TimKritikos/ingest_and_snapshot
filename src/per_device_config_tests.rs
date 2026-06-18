@@ -27,6 +27,7 @@ fn make_source_media_entry(directory: PathBuf) -> crate::SourceMediaEntry {
         new_card_naming_scheme: crate::CardNamingScheme::CardFourDigits,
         directory,
         device_thumbnail: None,
+        subdevice_id: None,
     }
 }
 
@@ -156,6 +157,7 @@ fn test_transfer_with_empty_input_path_array_produces_one_override() {
 #[test]
 fn test_transfer_with_single_input_path_produces_one_override() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("DCIM")).unwrap();
     write_config(temp.path(), &config_with_transfers(r#"{"input_path": ["/DCIM"]}"#));
     let result = load_per_device_config(temp.path(), vec![], vec![]).unwrap();
     assert_eq!(result.len(), 1);
@@ -167,6 +169,8 @@ fn test_transfer_with_single_input_path_produces_one_override() {
 #[test]
 fn test_multiple_input_paths_expand_into_separate_overrides() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("DCIM")).unwrap();
+    std::fs::create_dir_all(temp.path().join("PRIVATE").join("AVCHD")).unwrap();
     write_config(
         temp.path(),
         &config_with_transfers(r#"{"input_path": ["/DCIM", "/PRIVATE/AVCHD"]}"#),
@@ -184,6 +188,9 @@ fn test_multiple_input_paths_expand_into_separate_overrides() {
 #[test]
 fn test_multiple_transfer_entries_each_expand_independently() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("A")).unwrap();
+    std::fs::create_dir(temp.path().join("B")).unwrap();
+    std::fs::create_dir(temp.path().join("C")).unwrap();
     write_config(
         temp.path(),
         r#"{
@@ -202,6 +209,7 @@ fn test_multiple_transfer_entries_each_expand_independently() {
 #[test]
 fn test_relative_input_path_gets_leading_slash() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("DCIM")).unwrap();
     write_config(temp.path(), &config_with_transfers(r#"{"input_path": ["DCIM"]}"#));
     let result = load_per_device_config(temp.path(), vec![], vec![]).unwrap();
     assert_eq!(result[0].input_path, Some(PathBuf::from("/DCIM")));
@@ -210,6 +218,7 @@ fn test_relative_input_path_gets_leading_slash() {
 #[test]
 fn test_absolute_input_path_is_preserved_as_is() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("DCIM").join("100MEDIA")).unwrap();
     write_config(
         temp.path(),
         &config_with_transfers(r#"{"input_path": ["/DCIM/100MEDIA"]}"#),
@@ -278,6 +287,8 @@ fn test_storage_device_and_source_media_fields_propagate_to_all_expanded_overrid
     let source_media_temp = tempfile::tempdir().unwrap();
     let source_media_dir = source_media_temp.path().join("my_camera");
     std::fs::create_dir(&source_media_dir).unwrap();
+    std::fs::create_dir(device.path().join("A")).unwrap();
+    std::fs::create_dir(device.path().join("B")).unwrap();
     write_config(
         device.path(),
         &config_with_transfers(&format!(
@@ -305,6 +316,10 @@ fn test_separate_transfer_entries_do_not_cross_contaminate_each_other() {
     let source_media_b_dir = source_media_b_temp.path().join("camera_b");
     std::fs::create_dir(&source_media_a_dir).unwrap();
     std::fs::create_dir(&source_media_b_dir).unwrap();
+    std::fs::create_dir(device.path().join("A1")).unwrap();
+    std::fs::create_dir(device.path().join("A2")).unwrap();
+    std::fs::create_dir(device.path().join("B1")).unwrap();
+    std::fs::create_dir(device.path().join("B2")).unwrap();
     write_config(
         device.path(),
         &format!(
@@ -423,6 +438,19 @@ fn test_all_dirs_covered_passes_check() {
         &config_with_transfers(r#"{"input_path": ["/DCIM", "/PRIVATE"]}"#),
     );
     assert!(load_per_device_config(device.path(), vec![], vec![]).is_ok());
+}
+
+#[test]
+fn test_nonexistent_input_path_is_silently_ignored() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("DCIM")).unwrap();
+    write_config(
+        temp.path(),
+        &config_with_transfers(r#"{"input_path": ["/DCIM", "/MISSING"]}"#),
+    );
+    let result = load_per_device_config(temp.path(), vec![], vec![]).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].input_path, Some(PathBuf::from("/DCIM")));
 }
 
 #[test]

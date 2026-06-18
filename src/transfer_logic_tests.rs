@@ -96,6 +96,7 @@ mod tests {
             new_card_naming_scheme: CardNamingScheme::CardFourDigits,
             directory: source_media_subdir.clone(),
             device_thumbnail: None,
+            subdevice_id: Some("woww".to_owned()),
         };
 
         spawn_transfer(
