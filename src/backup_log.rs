@@ -25,7 +25,12 @@ use crate::transfer_logic::{TransferSample, TransferEntry};
 
 const BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
 const BACKUP_LOG_STRUCTURE_MAJOR: u32 = 0;
-const BACKUP_LOG_CAPABILITY_LEVEL: u32 = 0;
+/// Capability level stamped onto newly written backup log entries. Bumped to 1 when the transfer
+/// fields moved to the structured `OverridableField` representation.
+const BACKUP_LOG_WRITE_CAPABILITY_LEVEL: u32 = 1;
+/// Lowest capability level this software is still willing to read. Kept at 0 so entries written by
+/// earlier versions remain readable; only the major version is required to match exactly.
+const BACKUP_LOG_MINIMUM_READ_CAPABILITY_LEVEL: u32 = 0;
 
 pub const BACKUP_LOG_DATA_DIR_NAME: &str = "backup_log_data";
 
@@ -43,7 +48,36 @@ struct BackupLogHeader {
     data_structure_version: BackupLogStructureVersion,
 }
 
-//TODO: Maybe replace these with the types defined for internal use
+/// On-disk representation of a transfer field that the user may override away from its
+/// auto-detected default.
+///
+/// `value` is the effective value that was actually used for the transfer. `overwritten` records
+/// whether the user manually set it instead of accepting the auto-detected default. `detected` is
+/// the auto-detected value that was overwritten — it is only present (and only meaningful) when
+/// `overwritten` is true, so an un-overwritten field omits it entirely.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OverridableField<T> {
+    pub value: T,
+    pub overwritten: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected: Option<T>,
+}
+
+impl<T> OverridableField<T> {
+    /// Builds the on-disk field from its effective value, whether the user overwrote the
+    /// auto-detected default, and the auto-detected value itself. Returns `None` when there is no
+    /// effective value, so the whole field is omitted from the log. The detected value is recorded
+    /// only when the field was overwritten.
+    fn build(effective_value: Option<T>, overwritten: bool, detected_value: Option<T>) -> Option<Self> {
+        effective_value.map(|value| OverridableField {
+            value,
+            overwritten,
+            detected: if overwritten { detected_value } else { None },
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct BackupLogTransferEntry {
@@ -51,23 +85,15 @@ pub struct BackupLogTransferEntry {
     pub transfer_uuidv7: Option<String>,
     pub card_path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card_id: Option<String>,
+    pub card_id: Option<OverridableField<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_media_overridden: Option<bool>,
+    pub source_media: Option<OverridableField<PathBuf>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card_id_overridden: Option<bool>,
+    pub medium_uuidv7: Option<OverridableField<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub medium_uuidv7: Option<String>,
+    pub device_location: Option<OverridableField<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub medium_uuidv7_overridden: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_location: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_location_overridden: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_path_overridden: Option<bool>,
+    pub input_path: Option<OverridableField<PathBuf>>,
     /// Kernel name of the filesystem the source was mounted as (e.g. "exfat", "vfat").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem_type: Option<String>,
@@ -156,7 +182,7 @@ impl BackupLogManager {
             data_type: BACKUP_LOG_DATA_TYPE.to_owned(),
             data_structure_version: BackupLogStructureVersion {
                 major: BACKUP_LOG_STRUCTURE_MAJOR,
-                capability_level: BACKUP_LOG_CAPABILITY_LEVEL,
+                capability_level: BACKUP_LOG_WRITE_CAPABILITY_LEVEL,
             },
             previous_uuidv7,
             current_uuidv7: new_uuid,
@@ -191,15 +217,31 @@ impl BackupLogManager {
             transfer_uuidv7:            Some(transfer.transfer_uuidv7.clone()),
             card_path:                  transfer.card_path.clone()
                                             .expect("card_path must be set before recording the transfer"),
-            card_id:                    fields.card_id().cloned(),
-            source_media_overridden:    Some(fields.source_media_selected.is_overridden()),
-            card_id_overridden:         Some(fields.card_id_selected.is_overridden()),
-            medium_uuidv7:              fields.storage_device().map(|id| id.to_string()),
-            medium_uuidv7_overridden:   Some(fields.storage_device_selected.is_overridden()),
-            device_location:            fields.device_location_name().map(|name| name.to_owned()),
-            device_location_overridden: Some(fields.device_location_selected.is_overridden()),
-            input_path:                 fields.input_path().cloned(),
-            input_path_overridden:      Some(fields.input_path_selected.is_overridden()),
+            card_id:                    OverridableField::build(
+                                            fields.card_id().cloned(),
+                                            fields.card_id_selected.is_overridden(),
+                                            fields.card_id_detected.clone(),
+                                        ),
+            source_media:               OverridableField::build(
+                                            fields.source_media().cloned(),
+                                            fields.source_media_selected.is_overridden(),
+                                            fields.source_media_detected.clone(),
+                                        ),
+            medium_uuidv7:              OverridableField::build(
+                                            fields.storage_device().map(|id| id.to_string()),
+                                            fields.storage_device_selected.is_overridden(),
+                                            fields.storage_device_detected.as_ref().map(|id| id.to_string()),
+                                        ),
+            device_location:            OverridableField::build(
+                                            fields.device_location_name().map(|name| name.to_owned()),
+                                            fields.device_location_selected.is_overridden(),
+                                            fields.device_location_detected.as_ref().map(|(_, name)| name.clone()),
+                                        ),
+            input_path:                 OverridableField::build(
+                                            fields.input_path().cloned(),
+                                            fields.input_path_selected.is_overridden(),
+                                            fields.input_path_detected.clone(),
+                                        ),
             filesystem_type:            transfer.filesystem_type.clone(),
             comment:                    fields.comment.clone(),
             transfer_samples:           Some(Vec::new()),
@@ -293,10 +335,10 @@ fn parse_backup_log_file(path: &PathBuf) -> Result<BackupLogEntry, String> {
         ));
     }
     #[allow(clippy::absurd_extreme_comparisons)]
-    if header.data_structure_version.capability_level < BACKUP_LOG_CAPABILITY_LEVEL {
+    if header.data_structure_version.capability_level < BACKUP_LOG_MINIMUM_READ_CAPABILITY_LEVEL {
         return Err(format!(
             "{}: unsupported data_structure_version: capability_level {} is below minimum {}",
-            path.display(), header.data_structure_version.capability_level, BACKUP_LOG_CAPABILITY_LEVEL
+            path.display(), header.data_structure_version.capability_level, BACKUP_LOG_MINIMUM_READ_CAPABILITY_LEVEL
         ));
     }
 
@@ -346,6 +388,11 @@ pub fn load_backup_log(media_dir: &Path) -> Result<BackupLogState, String> {
 
 
 /// Updates the `next_uuidv7` field of an already-written entry atomically.
+///
+/// Only `next_uuidv7` is touched; the entry is otherwise re-serialized verbatim, so its
+/// `data_structure_version` (including `capability_level`) is preserved rather than bumped to the
+/// current write level. Linking entries together is a capability-level-0 feature, so stamping a
+/// higher level here would needlessly mark an older file as unreadable by level-0 readers.
 fn set_next_uuidv7_on_entry(
     log_dir: &Path,
     entry_uuid: &str,

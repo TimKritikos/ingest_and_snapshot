@@ -91,15 +91,33 @@ mod tests {
             new_transfers: vec![BackupLogTransferEntry {
                 transfer_uuidv7:            Some("019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned()),
                 card_path:                  PathBuf::from("source_media/cam/DATA/CARD0003"),
-                card_id:                    Some("CARD0003".to_owned()),
-                source_media_overridden:    Some(true),
-                card_id_overridden:         Some(false),
-                medium_uuidv7:              Some("018c0000-0000-7000-8000-000000000000".to_owned()),
-                medium_uuidv7_overridden:   Some(false),
-                device_location:            Some("usb-Generic_Card_Reader-0:0".to_owned()),
-                device_location_overridden: Some(false),
-                input_path:                 Some(PathBuf::from("/DCIM")),
-                input_path_overridden:      Some(true),
+                // A mix of overwritten and auto-detected fields so the round-trip test exercises
+                // both the `detected`-present and `detected`-absent serialisations.
+                card_id:                    Some(OverridableField {
+                                                value: "CARD0003".to_owned(),
+                                                overwritten: false,
+                                                detected: None,
+                                            }),
+                source_media:               Some(OverridableField {
+                                                value: PathBuf::from("cam/DATA"),
+                                                overwritten: true,
+                                                detected: Some(PathBuf::from("cam/AUTODETECTED")),
+                                            }),
+                medium_uuidv7:              Some(OverridableField {
+                                                value: "018c0000-0000-7000-8000-000000000000".to_owned(),
+                                                overwritten: false,
+                                                detected: None,
+                                            }),
+                device_location:            Some(OverridableField {
+                                                value: "usb-Generic_Card_Reader-0:0".to_owned(),
+                                                overwritten: false,
+                                                detected: None,
+                                            }),
+                input_path:                 Some(OverridableField {
+                                                value: PathBuf::from("/DCIM"),
+                                                overwritten: true,
+                                                detected: Some(PathBuf::from("/")),
+                                            }),
                 filesystem_type:            Some("exfat".to_owned()),
                 comment:                    Some("Wedding shoot, second camera".to_owned()),
                 transfer_samples:           Some(vec![
@@ -111,7 +129,7 @@ mod tests {
                 transfer_failed:            Some(true),
                 failure_message:            Some("test failure".to_owned()),
                 system_hostname:            Some("test-host".to_owned()),
-            }],
+            }]
         }
     }
 
@@ -153,9 +171,12 @@ mod tests {
             "new_transfers": [
                 {
                     "card_path": "source_media/cam/DATA/CARD0002",
-                    "card_id": "CARD0002",
-                    "device_location": "usb-Generic_Card_Reader-0:0",
-                    "device_location_overridden": false,
+                    "card_id": {"value": "CARD0002", "overwritten": false},
+                    "device_location": {
+                        "value": "usb-Generic_Card_Reader-0:0",
+                        "overwritten": true,
+                        "detected": "usb-Other_Card_Reader-0:0"
+                    },
                     "transfer_performed_by": "ingest_and_snapshot 0.1.0",
                     "transfer_samples": [
                         {"timestamp_ms": 1000, "bytes_done": 512}
@@ -211,10 +232,35 @@ mod tests {
             "next_uuidv7 must point to an existing file"
         );
 
+        // Linking only adds next_uuidv7, a capability-level-0 feature, so the previous entry's
+        // capability level must be left untouched at the 0 it was written with — not bumped to the
+        // current write level.
+        assert_eq!(
+            updated["data_structure_version"]["capability_level"], 0,
+            "updating next_uuidv7 must preserve the existing capability level",
+        );
+
         // Every other field must be unchanged — remove next_uuidv7 and compare
         let mut updated_without_next = updated.clone();
         updated_without_next.as_object_mut().unwrap().remove("next_uuidv7");
         assert_same_fields(&prev_entry_json, &updated_without_next, "");
+    }
+
+    #[test]
+    fn newly_created_entries_are_written_at_the_current_write_capability_level() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let log_dir = tempdir.path().to_path_buf();
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        BackupLogManager::create_new(log_dir.clone(), None, LogFileOwnership::default()).unwrap();
+
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(only_json_file_in(&log_dir)).unwrap()
+        ).unwrap();
+        assert_eq!(
+            written["data_structure_version"]["capability_level"], 1,
+            "newly created entries must be stamped at write capability level 1",
+        );
     }
 
     /// Returns the single non-temporary `.json` file in `dir`, panicking unless there is exactly one.
