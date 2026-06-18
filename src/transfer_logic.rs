@@ -5,7 +5,7 @@ use crate::ui_api::{self, UiBackend};
 use crate::SourceMediaEntry;
 use crate::CardNamingScheme;
 use crate::transfer_registry::{PendingTransferRegistry, PendingCardId, TransferId};
-use crate::mount_manager::MountManager;
+use crate::mount_manager::{MountManager, FilesystemType};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -148,9 +148,10 @@ pub struct TransferEntry {
     /// Hostname recorded in the backup log for this transfer.
     pub system_hostname: String,
 
-    /// Kernel name of the filesystem the source was mounted as (e.g. "exfat", "vfat"), or `None`
-    /// for transfers from the local filesystem. Recorded in the backup log for reference.
-    pub filesystem_type: Option<String>,
+    /// The filesystem the source was mounted as, or `None` for transfers from the local
+    /// filesystem. Recorded in the backup log, and decides whether the copied-out files need
+    /// their permissions normalized (see `normalize_copied_permissions`).
+    pub filesystem_type: Option<FilesystemType>,
 
     // --- Outcome data, recorded as the transfer runs (also persisted to the backup log) ---
     /// Card directory path relative to `media_dir`; set once the destination is known.
@@ -158,6 +159,14 @@ pub struct TransferEntry {
     pub bytes_total_measured: Option<u64>,
     pub transfer_samples: Option<Vec<TransferSample>>,
     pub transfer_result: Option<TransferResult>,
+}
+
+impl TransferEntry {
+    /// The kernel name of the source filesystem for the backup log, or `None` for a local-filesystem
+    /// transfer. Keeps the persistence layer from needing to know about [`FilesystemType`].
+    pub fn filesystem_type_name(&self) -> Option<&'static str> {
+        self.filesystem_type.map(FilesystemType::kernel_name)
+    }
 }
 
 // Detected info provided at transfer start.
@@ -168,8 +177,8 @@ pub struct DetectedTransferInfo {
     /// Absolute device node paired with its /dev/disk/by-id name, or the local-filesystem sentinel.
     pub device_location: Option<DeviceLocation>,
     pub input_path: Option<InputPath>,
-    /// Kernel name of the filesystem the source was mounted as, or `None` for the local filesystem.
-    pub filesystem_type: Option<String>,
+    /// The filesystem the source was mounted as, or `None` for the local filesystem.
+    pub filesystem_type: Option<FilesystemType>,
 }
 
 /// Picks the initial choice for a field: use the auto value if one was detected, otherwise nothing.
@@ -235,7 +244,7 @@ fn run_transfer(
             mount_root:               None,
         },
         system_hostname,
-        filesystem_type:      detected.filesystem_type.clone(),
+        filesystem_type:      detected.filesystem_type,
         card_path:            None,
         bytes_total_measured: None,
         transfer_samples:     None,
@@ -816,6 +825,18 @@ fn run_transfer(
         Err(e)   => Err(e),
     };
 
+    // Files copied out of a filesystem with no native Unix permissions carry only synthesized
+    // modes (e.g. the DOS read-only attribute surfaces as missing write bits), so normalize the
+    // copied tree to ordinary permissions. Only the destination is touched, and only after a
+    // successful move; a normalization failure folds into the transfer outcome.
+    let move_outcome = move_outcome.and_then(|()| {
+        if transfer_data.filesystem_type.is_some_and(FilesystemType::lacks_native_unix_permissions) {
+            normalize_copied_permissions(&destination_dir)
+        } else {
+            Ok(())
+        }
+    });
+
     transfer_data.transfer_result = Some(match &move_outcome {
         Ok(())       => TransferResult::Succeeded,
         Err(message) => TransferResult::Failed(message.clone()),
@@ -1148,6 +1169,50 @@ fn resolve_source_data_dir(fields: &TransferFields) -> Result<PathBuf, String> {
         }
         None => Ok(virtual_path.clone()),
     }
+}
+
+/// Canonical permissions applied to data copied out of a filesystem that has no native Unix
+/// permission model (FAT/exFAT/NTFS). The source modes there are synthesized rather than real, so
+/// the copy is given ordinary file/directory permissions instead. See `normalize_copied_permissions`.
+const NORMALIZED_FILE_MODE: u32 = 0o644;
+const NORMALIZED_DIRECTORY_MODE: u32 = 0o755;
+
+/// Recursively sets every directory under `root` (and `root` itself) to `NORMALIZED_DIRECTORY_MODE`
+/// and every regular file to `NORMALIZED_FILE_MODE`. Symlinks are skipped so their targets are
+/// never altered. Used after copying out of a non-Unix filesystem, where the synthesized source
+/// modes (and the DOS read-only attribute) would otherwise carry over to the ingested copy.
+///
+/// Only `ctime` is affected (a chmod never touches `mtime`/`atime`), and `ctime` is already reset
+/// to ingest time by the cross-filesystem move, so no originating timestamp is disturbed.
+fn normalize_copied_permissions(root: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let set_mode = |path: &std::path::Path, mode: u32| -> Result<(), String> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("Failed to normalize permissions of {:?}: {}", path, e))
+    };
+
+    set_mode(root, NORMALIZED_DIRECTORY_MODE)?;
+
+    let mut pending_dirs = vec![root.to_path_buf()];
+    while let Some(current_dir) = pending_dirs.pop() {
+        let entries = std::fs::read_dir(&current_dir)
+            .map_err(|e| format!("Failed to read {:?} while normalizing permissions: {}", current_dir, e))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|e| format!("Failed to read an entry of {:?} while normalizing permissions: {}", current_dir, e))?;
+            let metadata = entry.metadata() // does not follow symlinks
+                .map_err(|e| format!("Failed to inspect {:?} while normalizing permissions: {}", entry.path(), e))?;
+            if metadata.is_dir() {
+                set_mode(&entry.path(), NORMALIZED_DIRECTORY_MODE)?;
+                pending_dirs.push(entry.path());
+            } else if metadata.is_file() {
+                set_mode(&entry.path(), NORMALIZED_FILE_MODE)?;
+            }
+            // Symlinks and other special entries are left untouched.
+        }
+    }
+    Ok(())
 }
 
 /// Total size in bytes of all regular files under `dir`, recursively.

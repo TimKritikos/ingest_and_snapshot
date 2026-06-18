@@ -251,7 +251,7 @@ impl BackupLogManager {
                                             fields.input_path_selected.is_overridden(),
                                             fields.input_path_detected.clone(),
                                         ),
-            filesystem_type:            transfer.filesystem_type.clone(),
+            filesystem_type:            transfer.filesystem_type_name().map(str::to_owned),
             comment:                    fields.comment.clone(),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),

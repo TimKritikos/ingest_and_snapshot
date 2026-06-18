@@ -34,10 +34,10 @@ const MOUNT_BASE_DIR: &str = "/run/ingest_and_snapshot/mounts";
 const NON_UNIX_PERMISSION_MASK_OPTIONS: &str = "dmask=022,fmask=133";
 
 /// A filesystem we know how to mount. Carrying this as an enum rather than a bare string gives a
-/// single source of truth for the kernel name (used both at mount time and when recording the
-/// type in the logs) and for whether the filesystem needs explicit permission-mask options.
+/// single source of truth for the kernel name (used at mount time, surfaced in the UI, and written
+/// to the logs) and for whether the filesystem has a native Unix permission model.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FilesystemType {
+pub enum FilesystemType {
     Exfat,
     Vfat,
     Ntfs3,
@@ -51,7 +51,7 @@ enum FilesystemType {
 impl FilesystemType {
     /// The name the kernel knows this filesystem by: passed to the `mount` syscall as the
     /// filesystem type, surfaced in the UI, and written to the logs.
-    fn kernel_name(self) -> &'static str {
+    pub fn kernel_name(self) -> &'static str {
         match self {
             FilesystemType::Exfat => "exfat",
             FilesystemType::Vfat  => "vfat",
@@ -64,19 +64,31 @@ impl FilesystemType {
         }
     }
 
-    /// The mount options needed to make this filesystem present sensible Unix permissions, or
-    /// `None` for native Unix filesystems, which already carry real permissions and would reject
-    /// such options with EINVAL. See `NON_UNIX_PERMISSION_MASK_OPTIONS`.
-    fn permission_mask_options(self) -> Option<&'static str> {
+    /// Whether this filesystem has no native Unix permission model (the FAT family and NTFS).
+    /// Such filesystems only synthesize Unix modes from DOS attributes and mount masks, so they
+    /// both need explicit permission-mask mount options and need the modes of files copied out of
+    /// them normalized afterwards. Native Unix filesystems return `false`.
+    pub fn lacks_native_unix_permissions(self) -> bool {
         match self {
             FilesystemType::Exfat
             | FilesystemType::Vfat
             | FilesystemType::Ntfs3
-            | FilesystemType::Ntfs => Some(NON_UNIX_PERMISSION_MASK_OPTIONS),
+            | FilesystemType::Ntfs => true,
             FilesystemType::Ext4
             | FilesystemType::Btrfs
             | FilesystemType::Xfs
-            | FilesystemType::F2fs => None,
+            | FilesystemType::F2fs => false,
+        }
+    }
+
+    /// The mount options needed to make this filesystem present sensible Unix permissions, or
+    /// `None` for native Unix filesystems, which already carry real permissions and would reject
+    /// such options with EINVAL. See `NON_UNIX_PERMISSION_MASK_OPTIONS`.
+    fn permission_mask_options(self) -> Option<&'static str> {
+        if self.lacks_native_unix_permissions() {
+            Some(NON_UNIX_PERMISSION_MASK_OPTIONS)
+        } else {
+            None
         }
     }
 }
@@ -480,7 +492,7 @@ fn mount_thread(
                 source_device: transfer_override.storage_device,
                 device_location: Some((real_device_path.clone(), by_id_name.clone())),
                 input_path: transfer_override.input_path,
-                filesystem_type: Some(mounted_filesystem_type.kernel_name().to_string()),
+                filesystem_type: Some(mounted_filesystem_type),
             },
             Arc::clone(&spawn_deps.backup_log_manager),
             spawn_deps.media_dir.clone(),
