@@ -298,6 +298,7 @@ pub fn run() -> ! {
                     device_location_selected: TransferFieldState::AutoSelected,
                     input_path_detected:      None,
                     input_path_selected:      TransferFieldState::NotSelected,
+                    comment:                  None,
                     mount_root:               None,
                 };
 
@@ -339,6 +340,10 @@ pub fn run() -> ! {
                         }
                         ui_api::ApproveTransferResponse::InputPathChanged(new_path) => {
                             fields.input_path_selected = TransferFieldState::Overridden(new_path);
+                            let _ = update_tx.send(fields.clone());
+                        }
+                        ui_api::ApproveTransferResponse::CommentChanged(new_comment) => {
+                            fields.comment = if new_comment.is_empty() { None } else { Some(new_comment) };
                             let _ = update_tx.send(fields.clone());
                         }
                         ui_api::ApproveTransferResponse::CardIdChanged(new_id) => {
@@ -474,6 +479,7 @@ pub fn run() -> ! {
                         device_location_selected: TransferFieldState::NotSelected,
                         input_path_detected:      None,
                         input_path_selected:      TransferFieldState::NotSelected,
+                        comment:                  None,
                         mount_root:               None,
                     };
 
@@ -521,6 +527,10 @@ pub fn run() -> ! {
                                 }
                                 ui_api::ApproveTransferResponse::InputPathChanged(new_path) => {
                                     fields.input_path_selected = TransferFieldState::Overridden(new_path);
+                                    let _ = update_tx.send(fields.clone());
+                                }
+                                ui_api::ApproveTransferResponse::CommentChanged(new_comment) => {
+                                    fields.comment = if new_comment.is_empty() { None } else { Some(new_comment) };
                                     let _ = update_tx.send(fields.clone());
                                 }
                                 ui_api::ApproveTransferResponse::Approved => {

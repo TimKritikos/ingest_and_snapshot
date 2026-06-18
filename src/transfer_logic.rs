@@ -62,6 +62,7 @@ type StorageId      = Uuid;              // uuidv7 that should exist on the devi
 /// An absolute path to the real device and the name it has on /dev/disk/by-id.
 pub type DeviceLocation = (PathBuf, String);
 type InputPath      = PathBuf;           // An absolute path but taken from the root of the mountpoint
+type Comment        = String;            // free-form note the user can optionally attach to a transfer
 
 /// The user-facing selection state of a transfer: every field that the approval dialog shows or
 /// lets the user override. Each field is a `*_detected` auto value plus a `*_selected` choice.
@@ -81,6 +82,9 @@ pub struct TransferFields {
     pub device_location_selected: TransferFieldState<DeviceLocation>,
     pub input_path_detected:      Option<InputPath>,
     pub input_path_selected:      TransferFieldState<InputPath>,
+    /// Optional free-form comment the user can attach to the transfer. Unlike the other fields it
+    /// has no auto-detected value and no override tracking — it is simply present or absent.
+    pub comment: Option<Comment>,
     /// Actual OS mountpoint of the source block device, if one is mounted.
     /// `None` for local-filesystem transfers (where the virtual input path IS the actual path).
     pub mount_root: Option<PathBuf>,
@@ -219,6 +223,8 @@ fn run_transfer(
             storage_device_selected:  initial_field_state(&detected.source_device),
             device_location_selected: initial_field_state(&detected.device_location),
             input_path_selected:      initial_field_state(&detected_input_path),
+
+            comment:                  None,
 
             mount_root:               None,
         },
@@ -364,6 +370,12 @@ fn run_transfer(
                         }
                         Ok(ui_api::ApproveTransferResponse::InputPathChanged(new_virtual_path)) => {
                             transfer_data.fields.input_path_selected = TransferFieldState::Overridden(new_virtual_path);
+                            let _ = update_tx.send(transfer_data.fields.clone());
+                        }
+                        Ok(ui_api::ApproveTransferResponse::CommentChanged(new_comment)) => {
+                            // An empty comment clears the field rather than storing an empty string.
+                            transfer_data.fields.comment =
+                                if new_comment.is_empty() { None } else { Some(new_comment) };
                             let _ = update_tx.send(transfer_data.fields.clone());
                         }
                         Ok(ui_api::ApproveTransferResponse::DeviceLocationChanged(name)) => {

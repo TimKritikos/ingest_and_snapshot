@@ -66,6 +66,9 @@ pub struct BackupLogTransferEntry {
     pub input_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_path_overridden: Option<bool>,
+    /// Optional free-form comment the user attached to this transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_performed_by: Option<String>,
     /// Byte count of the destination directory measured once after the transfer binary exited.
@@ -163,6 +166,7 @@ impl BackupLogManager {
             device_location_overridden: Some(fields.device_location_selected.is_overridden()),
             input_path:                 fields.input_path().cloned(),
             input_path_overridden:      Some(fields.input_path_selected.is_overridden()),
+            comment:                    fields.comment.clone(),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
             bytes_total_measured:       transfer.bytes_total_measured,

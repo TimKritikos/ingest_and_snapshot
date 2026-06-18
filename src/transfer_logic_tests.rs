@@ -71,6 +71,7 @@ mod tests {
                 device_location_selected: TransferFieldState::NotSelected,
                 input_path_detected:      None,
                 input_path_selected:      TransferFieldState::NotSelected,
+                comment:                  None,
                 mount_root:               None,
             },
             system_hostname: "testing_system".to_owned(),

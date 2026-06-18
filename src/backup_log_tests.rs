@@ -100,6 +100,7 @@ mod tests {
                 device_location_overridden: Some(false),
                 input_path:                 Some(PathBuf::from("/DCIM")),
                 input_path_overridden:      Some(true),
+                comment:                    Some("Wedding shoot, second camera".to_owned()),
                 transfer_samples:           Some(vec![
                     TransferSample { timestamp_ms: 1000, bytes_done: 1024 },
                     TransferSample { timestamp_ms: 2000, bytes_done: 2048 },

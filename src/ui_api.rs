@@ -53,6 +53,7 @@ pub enum ApproveTransferResponse {
     DeviceLocationChanged(String), // new /dev/disk/by-id/ entry selected
     DeviceLocationAuto,            // reset device location to auto-detected
     InputPathChanged(PathBuf),     // user selected a new virtual input path
+    CommentChanged(String),        // user set or cleared the free-form transfer comment
 }
 
 pub struct ConfirmCardIdQuery {

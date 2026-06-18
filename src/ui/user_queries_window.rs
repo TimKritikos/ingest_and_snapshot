@@ -20,6 +20,8 @@ pub struct QueryWindowState {
     pub storage_device_picker_open: bool,
     pub storage_device_picker_selection: usize,
     pub card_id_entry: Option<TextEntryState>,
+    /// Text entry buffer for the per-transfer comment, lazily created when the user opens it.
+    pub comment_entry: Option<TextEntryState>,
     pub device_location_picker_open: bool,
     pub device_location_picker_selection: usize,
     pub input_path_picker_open: bool,
@@ -45,6 +47,7 @@ impl QueryWindowState {
             storage_device_picker_open: false,
             storage_device_picker_selection: 0,
             card_id_entry: None,
+            comment_entry: None,
             device_location_picker_open: false,
             device_location_picker_selection: 0,
             input_path_picker_open: false,
@@ -75,6 +78,15 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                         state.card_id_entry = None;
                     }
                     TextEntryOutcome::Cancelled => { state.card_id_entry = None; }
+                    TextEntryOutcome::Editing   => {}
+                }
+            } else if let Some(entry) = &mut state.comment_entry {
+                match entry.handle_key(key.code) {
+                    TextEntryOutcome::Confirmed(new_comment) => {
+                        let _ = query.response_tx.send(ApproveTransferResponse::CommentChanged(new_comment));
+                        state.comment_entry = None;
+                    }
+                    TextEntryOutcome::Cancelled => { state.comment_entry = None; }
                     TextEntryOutcome::Editing   => {}
                 }
             } else if state.device_picker_open {
@@ -210,6 +222,9 @@ pub fn handle_key(state: &mut QueryWindowState, key: KeyEvent, available_devices
                     }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state.card_id_entry = Some(TextEntryState::new(query.fields.card_id().cloned().unwrap_or_default()));
+                    }
+                    KeyCode::Char('m') | KeyCode::Char('M') => {
+                        state.comment_entry = Some(TextEntryState::new(query.fields.comment.clone().unwrap_or_default()));
                     }
                     KeyCode::Enter if can_approve(&query.fields) => {
                         if let Some(UserQuery::ApproveTransfer(query)) = state.query_queue.pop_front() {
@@ -451,6 +466,12 @@ pub fn render(
             if let Some(entry) = &state.card_id_entry {
                 tui_dialog_widgets::TextEntry {
                     title: "Set card ID",
+                    text: &entry.text,
+                    cursor_pos: entry.cursor,
+                }.render(frame.area(), frame.buffer_mut());
+            } else if let Some(entry) = &state.comment_entry {
+                tui_dialog_widgets::TextEntry {
+                    title: "Set comment",
                     text: &entry.text,
                     cursor_pos: entry.cursor,
                 }.render(frame.area(), frame.buffer_mut());
@@ -839,12 +860,16 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
 
     let input_path_value: Option<String> = fields.input_path().map(|p| p.to_string_lossy().into_owned());
 
+    // The comment has no auto/override state, so it is never marked "(overridden)".
+    let comment_value: Option<String> = fields.comment.clone();
+
     let lines: Vec<Line> = vec![
         field_line("    Source media: ", Some("[S] "), source_media_value.as_deref(),     fields.source_media_selected.is_overridden()),
         field_line("         Card ID: ", Some("[C] "), card_id_value.as_deref(),          fields.card_id_selected.is_overridden()),
         field_line("  Storage device: ", Some("[D] "), storage_value.as_deref(),          fields.storage_device_selected.is_overridden()),
         field_line(" Device location: ", Some("[L] "), device_location_value.as_deref(),  fields.device_location_selected.is_overridden()),
         field_line("      Input path: ", Some("[I] "), input_path_value.as_deref(),        fields.input_path_selected.is_overridden()),
+        field_line("         Comment: ", Some("[M] "), comment_value.as_deref(),           false),
     ];
 
     frame.render_widget(Paragraph::new(lines), area);

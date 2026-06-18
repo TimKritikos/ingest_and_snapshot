@@ -268,9 +268,10 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
 
         if event::poll(Duration::from_millis(16))? && let Event::Key(key) = event::read()? {
             // The mount list key is always intercepted first so the user can always open it,
-            // unless a text entry dialog is active (snapshot name or card ID) — in that case
-            // 'f' should be typed into the field, not consumed as a shortcut.
+            // unless a text entry dialog is active (snapshot name, card ID or comment) — in that
+            // case 'f' should be typed into the field, not consumed as a shortcut.
             let text_entry_active = query_state.card_id_entry.is_some()
+                || query_state.comment_entry.is_some()
                 || query_state.snapshot_name_entry.is_some();
             if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) && !mount_list_state.open && !text_entry_active {
                 mount_list_state.open = true;
