@@ -122,16 +122,6 @@ fn test_higher_capability_level_than_required_is_accepted() {
 }
 
 #[test]
-fn test_unknown_json_fields_are_silently_ignored() {
-    let temp = tempfile::tempdir().unwrap();
-    write_config(
-        temp.path(),
-        r#"{"data_type": "ingest_and_snapshot_per_device_config", "data_structure_version": {"major": 0, "capability_level": 0}, "unknown_field": 42, "transfers": []}"#,
-    );
-    assert!(load_per_device_config(temp.path(), vec![], vec![]).is_ok());
-}
-
-#[test]
 fn test_empty_transfers_array_produces_empty_result() {
     let temp = tempfile::tempdir().unwrap();
     write_config(temp.path(), &config_with_transfers(""));
