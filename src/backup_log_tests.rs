@@ -91,31 +91,31 @@ mod tests {
             new_transfers: vec![BackupLogTransferEntry {
                 transfer_uuidv7:            Some("019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned()),
                 card_path:                  PathBuf::from("source_media/cam/DATA/CARD0003"),
-                // A mix of overwritten and auto-detected fields so the round-trip test exercises
+                // A mix of overridden and auto-detected fields so the round-trip test exercises
                 // both the `detected`-present and `detected`-absent serialisations.
                 card_id:                    Some(OverridableField {
                                                 value: "CARD0003".to_owned(),
-                                                overwritten: false,
+                                                overridden: false,
                                                 detected: None,
                                             }),
                 source_media:               Some(OverridableField {
                                                 value: PathBuf::from("cam/DATA"),
-                                                overwritten: true,
+                                                overridden: true,
                                                 detected: Some(PathBuf::from("cam/AUTODETECTED")),
                                             }),
                 medium_uuidv7:              Some(OverridableField {
                                                 value: "018c0000-0000-7000-8000-000000000000".to_owned(),
-                                                overwritten: false,
+                                                overridden: false,
                                                 detected: None,
                                             }),
                 device_location:            Some(OverridableField {
                                                 value: "usb-Generic_Card_Reader-0:0".to_owned(),
-                                                overwritten: false,
+                                                overridden: false,
                                                 detected: None,
                                             }),
                 input_path:                 Some(OverridableField {
                                                 value: PathBuf::from("/DCIM"),
-                                                overwritten: true,
+                                                overridden: true,
                                                 detected: Some(PathBuf::from("/")),
                                             }),
                 filesystem_type:            Some("exfat".to_owned()),
@@ -174,10 +174,10 @@ mod tests {
             "new_transfers": [
                 {
                     "card_path": "source_media/cam/DATA/CARD0002",
-                    "card_id": {"value": "CARD0002", "overwritten": false},
+                    "card_id": {"value": "CARD0002", "overridden": false},
                     "device_location": {
                         "value": "usb-Generic_Card_Reader-0:0",
-                        "overwritten": true,
+                        "overridden": true,
                         "detected": "usb-Other_Card_Reader-0:0"
                     },
                     "transfer_performed_by": "ingest_and_snapshot 0.1.0",

@@ -953,11 +953,12 @@ fn draw_centered_icon(frame: &mut Frame, area: Rect, icon: &[&str]) {
 }
 
 fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {
-    let label_style  = Style::default().fg(Color::Black);
-    let value_style  = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
-    let overwritten  = Style::default().fg(Color::DarkGray);
-    let none_style   = Style::default().fg(Color::DarkGray);
-    let hint_style   = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
+    let label_style       = Style::default().fg(Color::Black);
+    let value_style       = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    let overridden_style  = Style::default().fg(Color::DarkGray);
+    let none_style        = Style::default().fg(Color::DarkGray);
+    let hint_style        = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
+
     let fields = &query.fields;
 
     // Renders one field line. `value` is the already-resolved display string (None → "none");
@@ -972,7 +973,7 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
             Some(val) => {
                 spans.push(Span::styled(val.to_owned(), value_style));
                 if overridden {
-                    spans.push(Span::styled(" (overridden)", overwritten));
+                    spans.push(Span::styled(" (overridden)", overridden_style));
                 }
             }
         }

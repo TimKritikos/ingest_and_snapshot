@@ -51,15 +51,15 @@ struct BackupLogHeader {
 /// On-disk representation of a transfer field that the user may override away from its
 /// auto-detected default.
 ///
-/// `value` is the effective value that was actually used for the transfer. `overwritten` records
+/// `value` is the effective value that was actually used for the transfer. `overridden` records
 /// whether the user manually set it instead of accepting the auto-detected default. `detected` is
-/// the auto-detected value that was overwritten — it is only present (and only meaningful) when
-/// `overwritten` is true, so an un-overwritten field omits it entirely.
+/// the auto-detected value that was overridden — it is only present (and only meaningful) when
+/// `overridden` is true, so an un-overridden field omits it entirely.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct OverridableField<T> {
     pub value: T,
-    pub overwritten: bool,
+    pub overridden: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detected: Option<T>,
 }
@@ -68,12 +68,12 @@ impl<T> OverridableField<T> {
     /// Builds the on-disk field from its effective value, whether the user overwrote the
     /// auto-detected default, and the auto-detected value itself. Returns `None` when there is no
     /// effective value, so the whole field is omitted from the log. The detected value is recorded
-    /// only when the field was overwritten.
-    fn build(effective_value: Option<T>, overwritten: bool, detected_value: Option<T>) -> Option<Self> {
+    /// only when the field was overridden.
+    fn build(effective_value: Option<T>, overridden: bool, detected_value: Option<T>) -> Option<Self> {
         effective_value.map(|value| OverridableField {
             value,
-            overwritten,
-            detected: if overwritten { detected_value } else { None },
+            overridden,
+            detected: if overridden { detected_value } else { None },
         })
     }
 }
