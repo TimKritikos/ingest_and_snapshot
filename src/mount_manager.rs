@@ -26,10 +26,72 @@ use crate::transfer_registry::TransferId;
 
 const MOUNT_BASE_DIR: &str = "/run/ingest_and_snapshot/mounts";
 
+/// Mount options applied to non-Unix filesystems (the FAT family and NTFS), which have no native
+/// concept of Unix permissions. Without these, the kernel exposes every entry as 0777, marking
+/// every file world-writable and executable. `dmask=022` masks directories down to 0755
+/// (rwxr-xr-x) and `fmask=133` masks files down to 0644 (rw-r--r--), so the data we copy out
+/// looks like ordinary files instead of executables.
+const NON_UNIX_PERMISSION_MASK_OPTIONS: &str = "dmask=022,fmask=133";
+
+/// A filesystem we know how to mount. Carrying this as an enum rather than a bare string gives a
+/// single source of truth for the kernel name (used both at mount time and when recording the
+/// type in the logs) and for whether the filesystem needs explicit permission-mask options.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FilesystemType {
+    Exfat,
+    Vfat,
+    Ntfs3,
+    Ntfs,
+    Ext4,
+    Btrfs,
+    Xfs,
+    F2fs,
+}
+
+impl FilesystemType {
+    /// The name the kernel knows this filesystem by: passed to the `mount` syscall as the
+    /// filesystem type, surfaced in the UI, and written to the logs.
+    fn kernel_name(self) -> &'static str {
+        match self {
+            FilesystemType::Exfat => "exfat",
+            FilesystemType::Vfat  => "vfat",
+            FilesystemType::Ntfs3 => "ntfs3",
+            FilesystemType::Ntfs  => "ntfs",
+            FilesystemType::Ext4  => "ext4",
+            FilesystemType::Btrfs => "btrfs",
+            FilesystemType::Xfs   => "xfs",
+            FilesystemType::F2fs  => "f2fs",
+        }
+    }
+
+    /// The mount options needed to make this filesystem present sensible Unix permissions, or
+    /// `None` for native Unix filesystems, which already carry real permissions and would reject
+    /// such options with EINVAL. See `NON_UNIX_PERMISSION_MASK_OPTIONS`.
+    fn permission_mask_options(self) -> Option<&'static str> {
+        match self {
+            FilesystemType::Exfat
+            | FilesystemType::Vfat
+            | FilesystemType::Ntfs3
+            | FilesystemType::Ntfs => Some(NON_UNIX_PERMISSION_MASK_OPTIONS),
+            FilesystemType::Ext4
+            | FilesystemType::Btrfs
+            | FilesystemType::Xfs
+            | FilesystemType::F2fs => None,
+        }
+    }
+}
+
 /// Filesystem types tried in order when auto-detecting the filesystem on a block device.
 /// Camera cards are almost always exFAT or FAT32, so those come first.
-const FILESYSTEM_TYPES_TO_TRY: &[&str] = &[
-    "exfat", "vfat", "ntfs3", "ntfs", "ext4", "btrfs", "xfs", "f2fs",
+const FILESYSTEM_TYPES_TO_TRY: &[FilesystemType] = &[
+    FilesystemType::Exfat,
+    FilesystemType::Vfat,
+    FilesystemType::Ntfs3,
+    FilesystemType::Ntfs,
+    FilesystemType::Ext4,
+    FilesystemType::Btrfs,
+    FilesystemType::Xfs,
+    FilesystemType::F2fs,
 ];
 
 /// Everything needed to spawn transfer threads after a successful mount.
@@ -54,6 +116,11 @@ struct InternalMountEntry {
     /// True once the kernel mount syscall succeeded. False means mount is in progress or failed.
     /// Only entries with is_mounted=true need umount2 called on cleanup.
     is_mounted: bool,
+    /// The filesystem type the mount succeeded with, or `None` while still mounting or after a
+    /// failure. Recorded so the read-write remount can replay the matching permission-mask options
+    /// (MS_REMOUNT re-parses them, so omitting them would revert files to 0777 right when the mv
+    /// copies them out) and so the type can be written to the logs.
+    filesystem_type: Option<FilesystemType>,
 }
 
 pub struct MountManager {
@@ -138,6 +205,7 @@ pub fn start_mount(
             real_device_path: real_device_path.clone(),
             mountpoint: mountpoint.clone(),
             is_mounted: false,
+            filesystem_type: None,
         });
         (id, mountpoint)
     };
@@ -320,18 +388,18 @@ fn mount_thread(
     }
 
     let mut last_error = String::from("no filesystem types matched");
-    let mut mount_succeeded = false;
+    let mut mounted_filesystem_type: Option<FilesystemType> = None;
 
-    'outer: for fstype in FILESYSTEM_TYPES_TO_TRY {
+    'outer: for &filesystem_type in FILESYSTEM_TYPES_TO_TRY {
         match nix::mount::mount(
             Some(real_device_path.as_path()),
             mountpoint.as_path(),
-            Some(*fstype),
+            Some(filesystem_type.kernel_name()),
             MsFlags::MS_NOEXEC | MsFlags::MS_NOSUID | MsFlags::MS_RDONLY,
-            None::<&str>,
+            filesystem_type.permission_mask_options(),
         ) {
             Ok(()) => {
-                mount_succeeded = true;
+                mounted_filesystem_type = Some(filesystem_type);
                 break;
             }
             Err(nix::errno::Errno::EACCES) | Err(nix::errno::Errno::EPERM) => {
@@ -348,24 +416,29 @@ fn mount_thread(
         }
     }
 
-    if !mount_succeeded {
-        let _ = std::fs::remove_dir(&mountpoint);
-        let _ = ui.lock().unwrap().mount_update(MountUpdate::MountFailed {
-            id,
-            reason: format!("Could not mount: {}", last_error),
-        });
-        return;
-    }
+    let mounted_filesystem_type = match mounted_filesystem_type {
+        Some(filesystem_type) => filesystem_type,
+        None => {
+            let _ = std::fs::remove_dir(&mountpoint);
+            let _ = ui.lock().unwrap().mount_update(MountUpdate::MountFailed {
+                id,
+                reason: format!("Could not mount: {}", last_error),
+            });
+            return;
+        }
+    };
 
-    // Mark as successfully mounted so cleanup code knows to call umount2.
+    // Mark as successfully mounted so cleanup code knows to call umount2, and record the
+    // filesystem type so the read-write remount can replay its permission-mask options.
     if let Some(entry) = manager.lock().unwrap().mounts.iter_mut().find(|m| m.id == id) {
         entry.is_mounted = true;
+        entry.filesystem_type = Some(mounted_filesystem_type);
     }
 
-    let fs_type = detect_fs_type_from_mountinfo(&mountpoint)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let _ = ui.lock().unwrap().mount_update(MountUpdate::MountCompleted { id, fs_type });
+    let _ = ui.lock().unwrap().mount_update(MountUpdate::MountCompleted {
+        id,
+        fs_type: mounted_filesystem_type.kernel_name().to_string(),
+    });
 
     let config_overrides = match crate::per_device_config::load_per_device_config(&mountpoint,storage_devices.clone(),source_media_entries.clone()) {
         Ok(overrides) => overrides,
@@ -453,31 +526,24 @@ pub fn remount_readwrite(
     real_device_path: &Path,
     manager: &Arc<Mutex<MountManager>>,
 ) -> Result<(), String> {
-    let mountpoint = manager.lock().unwrap()
+    let (mountpoint, filesystem_type) = manager.lock().unwrap()
         .mounts.iter()
         .find(|m| m.real_device_path == real_device_path && m.is_mounted)
-        .map(|m| m.mountpoint.clone())
+        .map(|m| (m.mountpoint.clone(), m.filesystem_type))
         .ok_or_else(|| format!("Device {:?} is not currently mounted", real_device_path))?;
+
+    // MS_REMOUNT re-parses the options string, so the permission masks set at mount time must be
+    // passed again — otherwise files would revert to 0777 exactly when the mv copies them out.
+    // MS_NOEXEC/MS_NOSUID are likewise re-asserted: we only ever read the source media, never
+    // execute it, even while it is writable.
+    let permission_mask_options = filesystem_type
+        .and_then(FilesystemType::permission_mask_options);
 
     nix::mount::mount(
         Some(real_device_path),
         mountpoint.as_path(),
         None::<&str>,
-        MsFlags::MS_REMOUNT,
-        None::<&str>,
+        MsFlags::MS_REMOUNT | MsFlags::MS_NOEXEC | MsFlags::MS_NOSUID,
+        permission_mask_options,
     ).map_err(|e| format!("Failed to remount {:?} as read-write: {}", real_device_path, e))
-}
-
-fn detect_fs_type_from_mountinfo(mountpoint: &Path) -> Option<String> {
-    let mountpoint_str = mountpoint.to_str()?;
-    let content = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-    for line in content.lines() {
-        // Mountinfo format: mount_id parent_id major:minor root mountpoint options [optional] - fstype source super_options
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.get(4) == Some(&mountpoint_str) {
-            let dash_pos = fields.iter().position(|&f| f == "-")?;
-            return fields.get(dash_pos + 1).map(|s| s.to_string());
-        }
-    }
-    None
 }

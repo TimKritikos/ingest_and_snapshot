@@ -42,6 +42,7 @@ struct BackupLogHeader {
     data_structure_version: BackupLogStructureVersion,
 }
 
+//TODO: Maybe replace these with the types defined for internal use
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct BackupLogTransferEntry {
