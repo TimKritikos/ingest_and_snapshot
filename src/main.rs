@@ -821,6 +821,7 @@ fn main() {
                             source_device:    None,
                             device_location:  None,
                             input_path:       None,
+                            filesystem_type:  None,
                         },
                         Arc::clone(&backup_log_manager),
                         media_dir.clone(),

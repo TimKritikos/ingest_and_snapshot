@@ -480,6 +480,7 @@ fn mount_thread(
                 source_device: transfer_override.storage_device,
                 device_location: Some((real_device_path.clone(), by_id_name.clone())),
                 input_path: transfer_override.input_path,
+                filesystem_type: Some(mounted_filesystem_type.kernel_name().to_string()),
             },
             Arc::clone(&spawn_deps.backup_log_manager),
             spawn_deps.media_dir.clone(),

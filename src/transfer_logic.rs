@@ -148,6 +148,10 @@ pub struct TransferEntry {
     /// Hostname recorded in the backup log for this transfer.
     pub system_hostname: String,
 
+    /// Kernel name of the filesystem the source was mounted as (e.g. "exfat", "vfat"), or `None`
+    /// for transfers from the local filesystem. Recorded in the backup log for reference.
+    pub filesystem_type: Option<String>,
+
     // --- Outcome data, recorded as the transfer runs (also persisted to the backup log) ---
     /// Card directory path relative to `media_dir`; set once the destination is known.
     pub card_path: Option<PathBuf>,
@@ -164,6 +168,8 @@ pub struct DetectedTransferInfo {
     /// Absolute device node paired with its /dev/disk/by-id name, or the local-filesystem sentinel.
     pub device_location: Option<DeviceLocation>,
     pub input_path: Option<InputPath>,
+    /// Kernel name of the filesystem the source was mounted as, or `None` for the local filesystem.
+    pub filesystem_type: Option<String>,
 }
 
 /// Picks the initial choice for a field: use the auto value if one was detected, otherwise nothing.
@@ -229,6 +235,7 @@ fn run_transfer(
             mount_root:               None,
         },
         system_hostname,
+        filesystem_type:      detected.filesystem_type.clone(),
         card_path:            None,
         bytes_total_measured: None,
         transfer_samples:     None,

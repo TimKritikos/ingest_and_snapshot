@@ -67,6 +67,9 @@ pub struct BackupLogTransferEntry {
     pub input_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_path_overridden: Option<bool>,
+    /// Kernel name of the filesystem the source was mounted as (e.g. "exfat", "vfat").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_type: Option<String>,
     /// Optional free-form comment the user attached to this transfer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
@@ -167,6 +170,7 @@ impl BackupLogManager {
             device_location_overridden: Some(fields.device_location_selected.is_overridden()),
             input_path:                 fields.input_path().cloned(),
             input_path_overridden:      Some(fields.input_path_selected.is_overridden()),
+            filesystem_type:            transfer.filesystem_type.clone(),
             comment:                    fields.comment.clone(),
             transfer_samples:           Some(Vec::new()),
             transfer_performed_by:      Some(format!("ingest_and_snapshot {}", env!("CARGO_PKG_VERSION"))),
