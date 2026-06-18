@@ -95,6 +95,7 @@ mod tests {
             serial_number: "SN001".to_owned(),
             new_card_naming_scheme: CardNamingScheme::CardFourDigits,
             directory: source_media_subdir.clone(),
+            device_thumbnail: None,
         };
 
         spawn_transfer(

@@ -14,6 +14,7 @@ fn make_storage_device(id: &str) -> crate::StorageDeviceEntry {
     crate::StorageDeviceEntry {
         id: uuid(id),
         display_name: id.to_string(),
+        device_thumbnail: None,
     }
 }
 
@@ -25,6 +26,7 @@ fn make_source_media_entry(directory: PathBuf) -> crate::SourceMediaEntry {
         serial_number: "SN001".to_string(),
         new_card_naming_scheme: crate::CardNamingScheme::CardFourDigits,
         directory,
+        device_thumbnail: None,
     }
 }
 

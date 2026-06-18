@@ -25,6 +25,7 @@ pub fn run() -> ! {
                     serial_number:            "4710293".to_string(),
                     new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/sony_a7iv"),
+                    device_thumbnail:         None,
                 },
                 SourceMediaEntry {
                     device_make_name:         "Sony".to_string(),
@@ -33,6 +34,7 @@ pub fn run() -> ! {
                     serial_number:            "8823015".to_string(),
                     new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/sony_a7rv"),
+                    device_thumbnail:         None,
                 },
                 SourceMediaEntry {
                     device_make_name:         "Canon".to_string(),
@@ -41,6 +43,7 @@ pub fn run() -> ! {
                     serial_number:            "083059002910".to_string(),
                     new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/canon_eos_r5"),
+                    device_thumbnail:         None,
                 },
                 SourceMediaEntry {
                     device_make_name:         "Fujifilm".to_string(),
@@ -49,6 +52,7 @@ pub fn run() -> ! {
                     serial_number:            "91007345".to_string(),
                     new_card_naming_scheme:   CardNamingScheme::Freeform,
                     directory:                PathBuf::from("/media/source_media/fujifilm_gfx100s"),
+                    device_thumbnail:         None,
                 },
                 SourceMediaEntry {
                     device_make_name:         "Nikon".to_string(),
@@ -57,6 +61,7 @@ pub fn run() -> ! {
                     serial_number:            "3102948576".to_string(),
                     new_card_naming_scheme:   CardNamingScheme::CardFourDigits,
                     directory:                PathBuf::from("/media/source_media/nikon_z9"),
+                    device_thumbnail:         None,
                 },
     ];
 
@@ -64,10 +69,12 @@ pub fn run() -> ! {
         StorageDeviceEntry {
             id:           uuid::Uuid::parse_str("01940000-0000-7000-0000-000000000001").unwrap(),
             display_name: "Sony SF-G 64GB".to_string(),
+            device_thumbnail: None,
         },
         StorageDeviceEntry {
             id:           uuid::Uuid::parse_str("01940000-0000-7000-0000-000000000002").unwrap(),
             display_name: "Lexar Professional 256GB, Lexar Professional 256GB Backup".to_string(),
+            device_thumbnail: None,
         },
     ];
 

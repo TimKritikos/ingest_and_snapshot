@@ -18,6 +18,8 @@ mod user_queries_window;
 mod user_actions_window;
 mod mount_list_overlay;
 mod check_terminal_window;
+#[cfg(feature = "device-thumbnails")]
+mod thumbnails;
 
 use user_actions_window::{ActionsWindowState, ActionsWindowEvent};
 use check_terminal_window::CheckTerminalState;
@@ -114,6 +116,10 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
     let mut mount_list_state = mount_list_overlay::MountListState::new();
     // `Some` only while the check terminal (snapshot mode) is active, replacing the normal layout.
     let mut check_terminal_state: Option<CheckTerminalState> = None;
+    // Built once (the constructor queries the terminal for sixel/font-size capabilities), then
+    // reused for every frame so its decode/encode caches persist across redraws.
+    #[cfg(feature = "device-thumbnails")]
+    let thumbnail_renderer = thumbnails::ThumbnailRenderer::new();
     #[cfg(feature = "fps-counter")]
     let mut frame_times: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     #[cfg(feature = "fps-counter")]
@@ -194,6 +200,7 @@ fn app(terminal: &mut DefaultTerminal, rx: Receiver<LogicToUiMessage>, tx: Sende
 
         terminal.draw(|frame| {
             render(frame, &actions_state, &query_state, &transfers, available_devices.as_deref(), current_system_info.as_ref(), &mount_list_state, check_terminal_state.as_mut(),
+                #[cfg(feature = "device-thumbnails")] &thumbnail_renderer,
                 #[cfg(feature = "fps-counter")] fps,
             )
         })?;
@@ -355,6 +362,7 @@ fn render(
     system_info: Option<&SystemInfo>,
     mount_list_state: &mount_list_overlay::MountListState,
     check_terminal_state: Option<&mut CheckTerminalState>,
+    #[cfg(feature = "device-thumbnails")] thumbnail_renderer: &thumbnails::ThumbnailRenderer,
     #[cfg(feature = "fps-counter")] fps: f64
     ) {
     let bg = Block::default().style(Style::default().bg(Color::Blue));
@@ -421,7 +429,8 @@ fn render(
         user_actions_window::render(frame, windows[window_index], actions_state, false, true);
     } else {
         if show_user_queries {
-            user_queries_window::render(frame, windows[window_index], query_state, available_devices);
+            user_queries_window::render(frame, windows[window_index], query_state, available_devices,
+                #[cfg(feature = "device-thumbnails")] thumbnail_renderer);
             window_index += 2;
         }
 

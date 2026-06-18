@@ -77,6 +77,11 @@ struct DeviceEntry {
     names: Vec<String>,
     id: Uuid,
     device_type: Vec<String>,
+    /// Path to a JPEG thumbnail of the device, relative to the directory holding `devices.json`.
+    /// Always parsed so the config format is stable; only drawn when the `device-thumbnails`
+    /// feature is enabled.
+    #[serde(default)]
+    device_thumbnail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +122,11 @@ struct SourceMediaInfo {
     device_model_name_pretty: Option<String>,
     device_unique_identification: SourceMediaUniqueIdentification,
     new_card_naming_scheme: CardNamingScheme,
+    /// Path to a JPEG thumbnail of the device, relative to this source media's directory.
+    /// Always parsed so the config format is stable; only drawn when the `device-thumbnails`
+    /// feature is enabled.
+    #[serde(default)]
+    device_thumbnail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +144,10 @@ struct SourceMediaConfig {
 pub struct StorageDeviceEntry {
     pub id: Uuid,
     pub display_name: String,
+    /// Absolute path to the device's JPEG thumbnail, resolved from `devices.json` at load time.
+    /// Only read by the thumbnail renderer, hence unused when the `device-thumbnails` feature is off.
+    #[cfg_attr(not(feature = "device-thumbnails"), allow(dead_code))]
+    pub device_thumbnail: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -144,6 +158,10 @@ struct SourceMediaEntry {
     serial_number: String,
     new_card_naming_scheme: CardNamingScheme,
     directory: PathBuf, // The directory from which this source media configuration was loaded.
+    /// Absolute path to the device's JPEG thumbnail, resolved from the source media config at load
+    /// time. Only read by the thumbnail renderer, hence unused when `device-thumbnails` is off.
+    #[cfg_attr(not(feature = "device-thumbnails"), allow(dead_code))]
+    device_thumbnail: Option<PathBuf>,
 }
 
 
@@ -339,6 +357,10 @@ fn scan_source_media(media_dir: &Path) -> Result<(Vec<SourceMediaEntry>, Vec<Str
             directory:                subdir.path().strip_prefix(media_dir)
                                           .map(|p| p.to_path_buf())
                                           .unwrap_or_else(|_| subdir.path()),
+            // Thumbnail paths are stored relative to the media dir; resolve them against it so the
+            // renderer gets a path it can open.
+            device_thumbnail:         config.source_media_info.device_thumbnail
+                                          .map(|relative_path| media_dir.join(relative_path)),
         });
     }
 
@@ -555,6 +577,9 @@ fn main() {
         .map(|d| StorageDeviceEntry {
             id:           d.id,
             display_name: d.names.join(", "),
+            // Thumbnail paths are stored relative to the media dir; resolve them against it.
+            device_thumbnail: d.device_thumbnail.clone()
+                                  .map(|relative_path| media_dir.join(relative_path)),
         })
         .collect();
 

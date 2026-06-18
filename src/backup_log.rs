@@ -80,6 +80,12 @@ impl<T> OverridableField<T> {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+pub struct BackupLogTransferEntryLite {
+    pub card_path: PathBuf,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BackupLogTransferEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_uuidv7: Option<String>,
@@ -129,6 +135,8 @@ pub struct BackupLogEntry {
     pub comment: Option<String>,
     pub completed_backup: bool,
     pub new_transfers: Vec<BackupLogTransferEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missed_transfers: Option<Vec<BackupLogTransferEntryLite>>,
 }
 
 /// The system user and group that backup log files should be owned by.
@@ -190,6 +198,7 @@ impl BackupLogManager {
             comment: None,
             completed_backup: false,
             new_transfers: Vec::new(),
+            missed_transfers: None,
         };
 
         let manager = BackupLogManager { log_dir, entry, ownership };

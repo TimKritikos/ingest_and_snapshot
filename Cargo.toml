@@ -8,6 +8,10 @@ dummy-ui-data = []
 fps-counter = []
 copy-instead-of-move = []
 disable-ui-safety-checks = []
+# Draws per-device JPEG thumbnails (decoded with `image`, rendered as sixel via `ratatui-image`)
+# in the approve-transfer dialog's icon slots. Falls back to the drawn placeholder when a device
+# has no thumbnail or the terminal cannot display sixel.
+device-thumbnails = ["dep:ratatui-image", "dep:image"]
 
 [dependencies]
 anyhow = "1.0.102"
@@ -25,6 +29,10 @@ sysinfo = "0.38.4"
 time-format = "1.2.2"
 udev = "0.9.3"
 vt100 = "0.16.2"
+# Sixel rendering for device thumbnails (enabled by the `device-thumbnails` feature). We decode the
+# JPEGs ourselves with a JPEG-only `image` build, so ratatui-image's bundled format decoders are off.
+ratatui-image = { version = "11.0.4", default-features = false, features = ["crossterm"], optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

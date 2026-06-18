@@ -6,11 +6,15 @@ use ratatui::style::{Color, Style, Modifier};
 use ratatui::text::{Line, Span};
 use ratatui::buffer::Buffer;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
+#[cfg(feature = "device-thumbnails")]
+use ratatui::widgets::{Block, BorderType};
 use crossterm::event::{KeyCode, KeyEvent};
 use super::tui_dialog_widgets::{self, TextEntryState, TextEntryOutcome};
 use crate::ui_api::{UserQuery, ApproveTransferQuery, UnknownDeviceQuery, UnknownDeviceResponse, ApproveTransferResponse, SourceMediaSelection, FatalErrorQuery, FatalErrorKind, SourceMediaWarningsQuery, ConfirmCardIdQuery, CardIdConflictReason, ConfirmCardIdResponse, NoSourceMediaWarningResponse, NoDeviceLocationWarningResponse, NoDeviceLocationWarningReason, NoInputPathWarningResponse, NewBackupLogQuery, NewBackupLogResponse, CardIdInLogWarningQuery, CardIdInLogWarningResponse, ZeroSizeTransferWarningResponse, SnapshotNameResponse};
 use crate::{SourceMediaEntry, StorageDeviceEntry};
 use crate::transfer_logic::TransferFields;
+#[cfg(feature = "device-thumbnails")]
+use super::thumbnails::ThumbnailRenderer;
 
 pub struct QueryWindowState {
     pub query_queue: VecDeque<UserQuery>,
@@ -438,6 +442,7 @@ pub fn render(
     area: Rect,
     state: &QueryWindowState,
     available_devices: Option<&[SourceMediaEntry]>,
+    #[cfg(feature = "device-thumbnails")] thumbnail_renderer: &ThumbnailRenderer,
 ) {
     let query = state.query_queue.front().expect("render called with empty query queue");
     let queued_count = state.query_queue.len() - 1;
@@ -462,7 +467,8 @@ pub fn render(
 
     match query {
         UserQuery::ApproveTransfer(query) => {
-            render_approve_transfer(frame, padded, query, available_devices);
+            render_approve_transfer(frame, padded, query, available_devices,
+                #[cfg(feature = "device-thumbnails")] thumbnail_renderer);
             if let Some(entry) = &state.card_id_entry {
                 tui_dialog_widgets::TextEntry {
                     title: "Set card ID",
@@ -534,26 +540,17 @@ fn render_snapshot_name_prompt(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), centered);
 }
 
-fn render_approve_transfer(frame: &mut Frame, area: Rect, query: &ApproveTransferQuery, available_devices: Option<&[SourceMediaEntry]>) {
-    let icon_cols = area.height * super::FONT_CELL_ASPECT_RATIO;
-    let least_characters_for_text = 20 ; //TODO: I made this number up
-
-    // Split horizontally first so the icon takes the full height.
-    // When not wide enough, skip the icon and use the full area for content.
-    let content_area = if area.width > icon_cols + least_characters_for_text {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![
-                Constraint::Length(icon_cols),
-                Constraint::Length(2),
-                Constraint::Min(0),
-            ])
-            .split(area);
-        render_icon_placeholder(frame, cols[0]);
-        cols[2]
-    } else {
-        area
-    };
+fn render_approve_transfer(
+    frame: &mut Frame,
+    area: Rect,
+    query: &ApproveTransferQuery,
+    available_devices: Option<&[SourceMediaEntry]>,
+    #[cfg(feature = "device-thumbnails")] thumbnail_renderer: &ThumbnailRenderer,
+) {
+    let content_area = render_approve_transfer_icons(
+        frame, area, query, available_devices,
+        #[cfg(feature = "device-thumbnails")] thumbnail_renderer,
+    );
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -768,7 +765,170 @@ fn render_storage_device_picker(frame: &mut Frame, devices: &[StorageDeviceEntry
     );
 }
 
-fn render_icon_placeholder(frame: &mut Frame, area: Rect) {
+// Titles drawn above the two device icons in the approve-transfer dialog.
+const SOURCE_MEDIA_ICON_TITLE:   &str = "Source media device";
+const STORAGE_DEVICE_ICON_TITLE: &str = "Storage device";
+
+// Placeholder art drawn when a device has no thumbnail (or one cannot be displayed). Both are 13
+// cells wide so the two icon columns line up. The source media icon evokes a camera; the storage
+// device icon evokes a stack of disk platters.
+const SOURCE_MEDIA_ICON: &[&str] = &[
+    "      _      ",
+    "  _n_|_|_,_  ",
+    " |===.-.===| ",
+    " |  ((_))  | ",
+    " '==='-'===' ",
+    "             ",
+];
+
+
+const STORAGE_DEVICE_ICON: &[&str] = &[
+    "  ________  ",
+    " | |____| | ",
+    " |   __   | ",
+    " |  (__)  | ",
+    " |        | ",
+    " |________| ",
+];
+
+
+/// Resolves the absolute thumbnail path of the source media currently selected in the dialog.
+#[cfg(feature = "device-thumbnails")]
+fn selected_source_media_thumbnail<'a>(
+    query: &ApproveTransferQuery,
+    available_devices: Option<&'a [SourceMediaEntry]>,
+) -> Option<&'a Path> {
+    let selected_directory = query.fields.source_media()?;
+    available_devices?
+        .iter()
+        .find(|entry| &entry.directory == selected_directory)?
+        .device_thumbnail
+        .as_deref()
+}
+
+/// Resolves the absolute thumbnail path of the storage device currently selected in the dialog.
+#[cfg(feature = "device-thumbnails")]
+fn selected_storage_device_thumbnail(query: &ApproveTransferQuery) -> Option<&Path> {
+    let selected_id = query.fields.storage_device()?;
+    query.available_storage_devices
+        .iter()
+        .find(|device| &device.id == selected_id)?
+        .device_thumbnail
+        .as_deref()
+}
+
+/// Lays out the source media and storage device icons on the left of the approve-transfer dialog
+/// and returns the remaining area for the dialog's textual content. When the dialog is too narrow
+/// for both icons plus the text it drops to a single icon, and when narrower still it drops the
+/// icons entirely and hands back the whole area.
+fn render_approve_transfer_icons(
+    frame: &mut Frame,
+    area: Rect,
+    #[cfg_attr(not(feature = "device-thumbnails"), allow(unused_variables))] query: &ApproveTransferQuery,
+    #[cfg_attr(not(feature = "device-thumbnails"), allow(unused_variables))] available_devices: Option<&[SourceMediaEntry]>,
+    #[cfg(feature = "device-thumbnails")] thumbnail_renderer: &ThumbnailRenderer,
+) -> Rect {
+    // Each icon column reserves one row for its title; the icon below it is kept roughly square by
+    // deriving its cell width from its cell height and the font cell aspect ratio.
+    let title_height = 1;
+    let icon_area_height = area.height.saturating_sub(title_height);
+    let icon_cols = icon_area_height * super::FONT_CELL_ASPECT_RATIO;
+    let gap_between_icons = 1;
+    let gap_before_content = 2;
+    let least_characters_for_text = 20; //TODO: I made this number up
+
+    #[cfg(feature = "device-thumbnails")]
+    let source_thumbnail = selected_source_media_thumbnail(query, available_devices);
+    #[cfg(feature = "device-thumbnails")]
+    let storage_thumbnail = selected_storage_device_thumbnail(query);
+
+    let two_icons_width = icon_cols + gap_between_icons + icon_cols + gap_before_content;
+    let one_icon_width  = icon_cols + gap_before_content;
+
+    if area.width > two_icons_width + least_characters_for_text {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Length(icon_cols),          // source media icon
+                Constraint::Length(gap_between_icons),
+                Constraint::Length(icon_cols),          // storage device icon
+                Constraint::Length(gap_before_content),
+                Constraint::Min(0),                     // dialog content
+            ])
+            .split(area);
+        render_titled_device_icon(frame, cols[0], SOURCE_MEDIA_ICON_TITLE, SOURCE_MEDIA_ICON,
+            #[cfg(feature = "device-thumbnails")] source_thumbnail,
+            #[cfg(feature = "device-thumbnails")] thumbnail_renderer);
+        render_titled_device_icon(frame, cols[2], STORAGE_DEVICE_ICON_TITLE, STORAGE_DEVICE_ICON,
+            #[cfg(feature = "device-thumbnails")] storage_thumbnail,
+            #[cfg(feature = "device-thumbnails")] thumbnail_renderer);
+        cols[4]
+    } else if area.width > one_icon_width + least_characters_for_text {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Length(icon_cols),
+                Constraint::Length(gap_before_content),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        render_titled_device_icon(frame, cols[0], SOURCE_MEDIA_ICON_TITLE, SOURCE_MEDIA_ICON,
+            #[cfg(feature = "device-thumbnails")] source_thumbnail,
+            #[cfg(feature = "device-thumbnails")] thumbnail_renderer);
+        cols[2]
+    } else {
+        area
+    }
+}
+
+/// Draws a centered title row and, below it, the device icon: the device's JPEG thumbnail as sixel
+/// when the `device-thumbnails` feature is enabled and one is available, otherwise `placeholder_art`.
+fn render_titled_device_icon(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    placeholder_art: &[&str],
+    #[cfg(feature = "device-thumbnails")] thumbnail: Option<&Path>,
+    #[cfg(feature = "device-thumbnails")] thumbnail_renderer: &ThumbnailRenderer,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![
+            Constraint::Length(1), // title
+            Constraint::Min(0),    // icon
+        ])
+        .split(area);
+
+    let title_style = Style::default().fg(Color::Black).add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(title.to_owned(), title_style))).alignment(Alignment::Center),
+        rows[0],
+    );
+
+    let icon_area = rows[1];
+
+    // Prefer the sixel thumbnail, framed by a text border; fall back to the placeholder art when it
+    // is unavailable, fails to decode, or the terminal cannot display it.
+    #[cfg(feature = "device-thumbnails")]
+    if let Some(path) = thumbnail {
+        let border = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Black));
+        // The image is drawn into the area inside the border. The border is rendered afterwards: it
+        // only touches the perimeter cells, leaving the rendered image untouched, and is skipped
+        // entirely when the thumbnail could not be drawn so the placeholder takes the full area.
+        let inner = border.inner(icon_area);
+        if thumbnail_renderer.render_thumbnail(frame, inner, path) {
+            frame.render_widget(border, icon_area);
+            return;
+        }
+    }
+
+    draw_centered_icon(frame, icon_area, placeholder_art);
+}
+
+/// Fills `area` with the icon background and draws `icon` centered within it.
+fn draw_centered_icon(frame: &mut Frame, area: Rect, icon: &[&str]) {
     let buf = frame.buffer_mut();
     let bg   = Style::default().bg(Color::DarkGray).fg(Color::Gray);
     let body = Style::default().bg(Color::DarkGray).fg(Color::White);
@@ -778,15 +938,6 @@ fn render_icon_placeholder(frame: &mut Frame, area: Rect) {
             buf[(x, y)].set_char(' ').set_style(bg);
         }
     }
-
-    let icon: &[&str] = &[
-        "   ╭──╮      ",
-        "╭──╯  ╰─────╮",
-        "│   ╭─────╮ │",
-        "│   │  ◎  │ │",
-        "│   ╰─────╯ │",
-        "╰───────────╯",
-    ];
 
     let icon_h = icon.len() as u16;
     let icon_w = icon.iter().map(|l| l.chars().count() as u16).max().unwrap_or(0);

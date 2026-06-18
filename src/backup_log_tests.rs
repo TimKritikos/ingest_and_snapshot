@@ -129,7 +129,10 @@ mod tests {
                 transfer_failed:            Some(true),
                 failure_message:            Some("test failure".to_owned()),
                 system_hostname:            Some("test-host".to_owned()),
-            }]
+            }],
+            missed_transfers: Some(vec![BackupLogTransferEntryLite {
+                card_path:                   PathBuf::from("source_media/cam/DATA/CARD0003"),
+            }]),
         }
     }
 
