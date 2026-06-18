@@ -23,6 +23,8 @@ pub fn render(frame: &mut Frame, area: Rect, system_info: Option<&SystemInfo>, m
             Span::styled("FPS:", key_style),
             #[cfg(feature = "fps-counter")]
             Span::styled(format!("{:.1}   ", fps), value_style),
+            Span::styled("S/W VERSION:", key_style),
+            Span::styled(format!("{}   ", env!("CARGO_PKG_VERSION")), value_style),
             Span::styled("RAM:", key_style),
             Span::styled(
                 system_info.map(|i| format!("{:.1}/{:.1} GiB",
