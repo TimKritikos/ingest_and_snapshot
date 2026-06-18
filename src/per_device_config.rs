@@ -231,6 +231,10 @@ pub fn load_per_device_config(
                     } else {
                         PathBuf::from("/").join(path)
                     };
+                    let path_within_device = normalized.strip_prefix("/").unwrap_or(&normalized);
+                    if !mountpoint.join(path_within_device).exists() {
+                        continue;
+                    }
                     overrides.push(PerDeviceTransferOverride {
                         source_media: entry.source_media.clone(),
                         storage_device: entry.storage_device,
