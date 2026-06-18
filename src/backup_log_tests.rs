@@ -62,7 +62,7 @@ mod tests {
             BackupLogState::CreateNewEntry { .. } => panic!("expected UseExistingEntry"),
         };
 
-        let mut manager = BackupLogManager::from_existing(log_dir.clone(), entry);
+        let mut manager = BackupLogManager::from_existing(log_dir.clone(), entry, LogFileOwnership::default());
 
         manager.update_transfer_samples(Path::new("__no_match__"), vec![]).unwrap();
 
@@ -198,7 +198,7 @@ mod tests {
         ).unwrap();
 
         // Creating a new entry linked to prev_uuid triggers set_next_uuidv7_on_entry.
-        let _ = BackupLogManager::create_new(log_dir.clone(), Some(prev_uuid.clone())).unwrap();
+        let _ = BackupLogManager::create_new(log_dir.clone(), Some(prev_uuid.clone()), LogFileOwnership::default()).unwrap();
 
         let updated_str = std::fs::read_to_string(log_dir.join(format!("{}.json", prev_uuid))).unwrap();
         let updated: serde_json::Value = serde_json::from_str(&updated_str).unwrap();
@@ -215,5 +215,72 @@ mod tests {
         let mut updated_without_next = updated.clone();
         updated_without_next.as_object_mut().unwrap().remove("next_uuidv7");
         assert_same_fields(&prev_entry_json, &updated_without_next, "");
+    }
+
+    /// Returns the single non-temporary `.json` file in `dir`, panicking unless there is exactly one.
+    fn only_json_file_in(dir: &std::path::Path) -> PathBuf {
+        let mut json_files: Vec<PathBuf> = std::fs::read_dir(dir).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect();
+        assert_eq!(json_files.len(), 1, "expected exactly one .json file in {}", dir.display());
+        json_files.pop().unwrap()
+    }
+
+    /// Proves the chown is genuinely applied to the log file, by targeting a uid *different* from
+    /// the one the file would naturally get — chowning to our own uid would be indistinguishable
+    /// from doing nothing. Reassigning a file to another uid is a privileged operation, so this
+    /// test requires root and is `#[ignore]`d by default: a normal `cargo test` reports it under
+    /// the ignored count, and it is run explicitly as root with
+    /// `sudo -E cargo test -- --ignored`. `#[ignore]` is resolved statically, so the test cannot
+    /// opt itself in or out based on a runtime root check — hence the hard assertion below, which
+    /// fails loudly if `--ignored` is run without root rather than silently passing.
+    #[test]
+    #[ignore = "requires root: reassigns the log file to a different uid"]
+    fn flush_chowns_the_log_file_to_the_configured_owner() {
+        use std::os::unix::fs::MetadataExt;
+        use nix::unistd::{Uid, getuid};
+
+        assert!(
+            getuid().is_root(),
+            "this test must be run as root, e.g. `sudo -E cargo test -- --ignored`",
+        );
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let log_dir = tempdir.path().to_path_buf();
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        // A uid that differs from the file's natural owner (root) so the chown has an observable
+        // effect. The target need not be a real account for chown to set it.
+        let target_uid = Uid::from_raw(getuid().as_raw() + 1);
+        let ownership = LogFileOwnership { owner_uid: Some(target_uid), owner_gid: None };
+
+        // create_new flushes the freshly-built entry to disk straight away.
+        BackupLogManager::create_new(log_dir.clone(), None, ownership).unwrap();
+
+        let log_file = only_json_file_in(&log_dir);
+        assert_eq!(
+            std::fs::metadata(&log_file).unwrap().uid(),
+            target_uid.as_raw(),
+            "the log file should have been chowned to the configured uid",
+        );
+    }
+
+    #[test]
+    fn flush_with_default_ownership_writes_the_file_and_leaves_no_temporary() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let log_dir = tempdir.path().to_path_buf();
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        // Default ownership leaves both uid and gid unset, so apply_to must be a no-op and the
+        // atomic write must still finish cleanly.
+        let _ = BackupLogManager::create_new(log_dir.clone(), None, LogFileOwnership::default()).unwrap();
+
+        let log_file = only_json_file_in(&log_dir);
+        assert!(log_file.exists(), "the log entry file should have been written");
+
+        let leftover_tmp_exists = std::fs::read_dir(&log_dir).unwrap()
+            .any(|entry| entry.unwrap().path().extension().and_then(|ext| ext.to_str()) == Some("tmp"));
+        assert!(!leftover_tmp_exists, "the atomic write should not leave a .tmp file behind");
     }
 }

@@ -7,7 +7,7 @@ mod tests {
     use crate::ui_api::{self, UiBackend, UiError, UserQuery};
     use crate::transfer_registry::PendingTransferRegistry;
     use crate::mount_manager::MountManager;
-    use crate::backup_log::BackupLogManager;
+    use crate::backup_log::{BackupLogManager, LogFileOwnership};
     use crate::{SourceMediaEntry, CardNamingScheme};
 
     struct MockUiBackend {
@@ -57,7 +57,7 @@ mod tests {
         // simulating the scenario where the card directory was deleted and the ID reused.
         let backup_log_dir = media_dir.join("metadata").join(crate::backup_log::BACKUP_LOG_DATA_DIR_NAME);
         std::fs::create_dir_all(&backup_log_dir).unwrap();
-        let mut log_manager = BackupLogManager::create_new(backup_log_dir, None).unwrap();
+        let mut log_manager = BackupLogManager::create_new(backup_log_dir, None, LogFileOwnership::default()).unwrap();
         let prior_transfer = TransferEntry {
             transfer_uuidv7: "019ec37e-1b9a-73c8-b1d7-5444113e1b2e".to_owned(),
             fields: TransferFields {

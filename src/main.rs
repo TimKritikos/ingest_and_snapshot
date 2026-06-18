@@ -31,6 +31,7 @@ use home::home_dir;
 use anyhow::{Result};
 use nix::sys::statvfs::statvfs;
 use nix::sys::statvfs::FsFlags;
+use nix::unistd::{User, Group};
 use serde::{Deserialize, Serialize};
 use udev::{Enumerator, MonitorBuilder};
 use std::ffi::OsStr;
@@ -158,6 +159,42 @@ struct MainConfig {
     /// Optional executable run after a snapshot's check fails, before the keep/destroy prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     snapshot_failure_callback: Option<String>,
+    /// Optional system user name that backup log files should be owned by. Looked up on the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_log_user: Option<String>,
+    /// Optional system group name that backup log files should be owned by. Looked up on the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_log_group: Option<String>,
+}
+
+/// Resolves the configured backup-log user and group names into their numeric system ids.
+///
+/// A `None` name leaves that part of the ownership unspecified. An unknown name is a hard error so
+/// the user is told their config refers to an account that does not exist, rather than silently
+/// writing the log files under the running process's own ownership.
+fn resolve_backup_log_ownership(
+    backup_log_user: &Option<String>,
+    backup_log_group: &Option<String>,
+) -> Result<backup_log::LogFileOwnership, String> {
+    let owner_uid = match backup_log_user {
+        Some(user_name) => Some(
+            User::from_name(user_name)
+                .map_err(|e| format!("Failed to look up backup log user '{}': {}", user_name, e))?
+                .ok_or_else(|| format!("Backup log user '{}' not found on the system", user_name))?
+                .uid,
+        ),
+        None => None,
+    };
+    let owner_gid = match backup_log_group {
+        Some(group_name) => Some(
+            Group::from_name(group_name)
+                .map_err(|e| format!("Failed to look up backup log group '{}': {}", group_name, e))?
+                .ok_or_else(|| format!("Backup log group '{}' not found on the system", group_name))?
+                .gid,
+        ),
+        None => None,
+    };
+    Ok(backup_log::LogFileOwnership { owner_uid, owner_gid })
 }
 
 fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
@@ -176,6 +213,8 @@ fn parse_config_file(config_file_path:PathBuf) -> Result<MainConfig> {
             ignore_device_list: [].to_vec(),
             snapshot_success_callback: None,
             snapshot_failure_callback: None,
+            backup_log_user: None,
+            backup_log_group: None,
         };
 
         let mut config_file = File::create(config_file_path)?;
@@ -383,6 +422,8 @@ fn write_config_atomically(
     ignore_device_list: &[String],
     snapshot_success_callback: &Option<String>,
     snapshot_failure_callback: &Option<String>,
+    backup_log_user: &Option<String>,
+    backup_log_group: &Option<String>,
 ) -> anyhow::Result<()> {
     let config = MainConfig {
         data_type: data_type.to_string(),
@@ -391,6 +432,8 @@ fn write_config_atomically(
         ignore_device_list: ignore_device_list.to_vec(),
         snapshot_success_callback: snapshot_success_callback.clone(),
         snapshot_failure_callback: snapshot_failure_callback.clone(),
+        backup_log_user: backup_log_user.clone(),
+        backup_log_group: backup_log_group.clone(),
     };
     let json = serde_json::to_string_pretty(&config)?;
     let temp_path = config_file_path.with_extension("tmp");
@@ -456,6 +499,10 @@ fn main() {
     // Snapshot callbacks are not mutated at runtime, but must be preserved on every config rewrite.
     let snapshot_success_callback = config.snapshot_success_callback;
     let snapshot_failure_callback = config.snapshot_failure_callback;
+    // Backup log ownership names are likewise not mutated at runtime, but must be preserved on
+    // every config rewrite.
+    let backup_log_user = config.backup_log_user;
+    let backup_log_group = config.backup_log_group;
     // Runtime allow list starts as a copy of the persisted list; session-only entries
     // (AllowOnce) are added here but never written to the config file.
     let mut runtime_allow_list: Vec<String> = allow_device_list.clone();
@@ -567,6 +614,22 @@ fn main() {
     };
 
     let backup_log_dir = media_dir.join("metadata").join(backup_log::BACKUP_LOG_DATA_DIR_NAME);
+
+    let backup_log_ownership = match resolve_backup_log_ownership(&backup_log_user, &backup_log_group) {
+        Ok(ownership) => ownership,
+        Err(msg) => {
+            let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+            ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+                error: ui_api::FatalErrorKind::BackupLog(msg),
+                response_tx,
+            }), true).unwrap();
+            let _ = response_rx.recv();
+            ui.lock().unwrap().quit().unwrap();
+            if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
+            process::exit(1);
+        }
+    };
+
     let backup_log_manager: Arc<Mutex<backup_log::BackupLogManager>> = match backup_log_state {
         backup_log::BackupLogState::UseExistingEntry(entry) => {
             for transfer in &entry.new_transfers {
@@ -625,7 +688,7 @@ fn main() {
                 }
             }
 
-            let manager = backup_log::BackupLogManager::from_existing(backup_log_dir, entry);
+            let manager = backup_log::BackupLogManager::from_existing(backup_log_dir, entry, backup_log_ownership);
             Arc::new(Mutex::new(manager))
         }
         backup_log::BackupLogState::CreateNewEntry { previous_uuidv7 } => {
@@ -644,7 +707,7 @@ fn main() {
                     }
                 }
             }
-            match backup_log::BackupLogManager::create_new(backup_log_dir, previous_uuidv7) {
+            match backup_log::BackupLogManager::create_new(backup_log_dir, previous_uuidv7, backup_log_ownership) {
                 Ok(manager) => Arc::new(Mutex::new(manager)),
                 Err(e) => {
                     let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
@@ -733,7 +796,7 @@ fn main() {
                 ui_api::UnknownDeviceResponse::AddToAllowList => {
                     allow_device_list.push(by_id_name.clone());
                     runtime_allow_list.push(by_id_name.clone());
-                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback, &backup_log_user, &backup_log_group) {
                         eprintln!("Failed to persist config change: {}", e);
                     }
                     syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
@@ -745,7 +808,7 @@ fn main() {
                 }
                 ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                     ignore_device_list.push(by_id_name.clone());
-                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
+                    if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback, &backup_log_user, &backup_log_group) {
                         eprintln!("Failed to persist config change: {}", e);
                     }
                 }
@@ -885,7 +948,7 @@ fn main() {
                             ui_api::UnknownDeviceResponse::AddToAllowList => {
                                 allow_device_list.push(by_id_name.clone());
                                 runtime_allow_list.push(by_id_name.clone());
-                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback, &backup_log_user, &backup_log_group) {
                                     eprintln!("Failed to persist config change: {}", e);
                                 }
                                 syspath_to_by_id.insert(syspath.clone(), by_id_name.clone());
@@ -897,7 +960,7 @@ fn main() {
                             }
                             ui_api::UnknownDeviceResponse::AddToIgnoreList => {
                                 ignore_device_list.push(by_id_name.clone());
-                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback) {
+                                if let Err(e) = write_config_atomically(&config_file_path, &config_data_type, &config_data_structure_version, &allow_device_list, &ignore_device_list, &snapshot_success_callback, &snapshot_failure_callback, &backup_log_user, &backup_log_group) {
                                     eprintln!("Failed to persist config change: {}", e);
                                 }
                             }

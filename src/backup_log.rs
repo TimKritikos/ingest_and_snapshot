@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::ser::PrettyFormatter;
+use nix::unistd::{Uid, Gid, chown};
 use crate::transfer_logic::{TransferSample, TransferEntry};
 
 const BACKUP_LOG_DATA_TYPE: &str = "backup_log_data";
@@ -104,22 +105,51 @@ pub struct BackupLogEntry {
     pub new_transfers: Vec<BackupLogTransferEntry>,
 }
 
+/// The system user and group that backup log files should be owned by.
+///
+/// Resolved from the configured `backup_log_user` / `backup_log_group` names before the manager
+/// is built. A `None` field means "leave that part of the ownership untouched", so the default
+/// (both `None`) keeps whatever ownership the writing process would naturally produce.
+#[derive(Clone, Copy, Default)]
+pub struct LogFileOwnership {
+    pub owner_uid: Option<Uid>,
+    pub owner_gid: Option<Gid>,
+}
+
+impl LogFileOwnership {
+    /// Applies the configured ownership to `path`, doing nothing when neither user nor group was
+    /// requested. Called on the freshly-written `.tmp` file before it is renamed into place so the
+    /// final file appears atomically with the correct ownership already set.
+    fn apply_to(&self, path: &Path) -> Result<(), String> {
+        if self.owner_uid.is_none() && self.owner_gid.is_none() {
+            return Ok(());
+        }
+        chown(path, self.owner_uid, self.owner_gid)
+            .map_err(|e| format!("Failed to set ownership on {}: {}", path.display(), e))
+    }
+}
+
 /// Thread-safe writer for a single backup log entry.
 /// All mutations flush the full entry atomically (write to a `.tmp` file then rename).
 pub struct BackupLogManager {
     log_dir: PathBuf,
     entry: BackupLogEntry,
+    ownership: LogFileOwnership,
 }
 
 impl BackupLogManager {
     /// Creates a brand-new backup log entry.
     /// When `previous_uuidv7` is `Some`, the previous entry's `next_uuidv7` field is updated
     /// atomically before the new entry is written.
-    pub fn create_new(log_dir: PathBuf, previous_uuidv7: Option<String>) -> Result<Self, String> {
+    pub fn create_new(
+        log_dir: PathBuf,
+        previous_uuidv7: Option<String>,
+        ownership: LogFileOwnership,
+    ) -> Result<Self, String> {
         let new_uuid = uuid::Uuid::now_v7().to_string();
 
         if let Some(ref prev_uuid) = previous_uuidv7 {
-            set_next_uuidv7_on_entry(&log_dir, prev_uuid, &new_uuid)?;
+            set_next_uuidv7_on_entry(&log_dir, prev_uuid, &new_uuid, ownership)?;
         }
 
         let entry = BackupLogEntry {
@@ -136,15 +166,15 @@ impl BackupLogManager {
             new_transfers: Vec::new(),
         };
 
-        let manager = BackupLogManager { log_dir, entry };
+        let manager = BackupLogManager { log_dir, entry, ownership };
         manager.flush()?;
         Ok(manager)
     }
 
     /// Constructs a manager from a previously-written entry that is still in progress.
     /// Does NOT write to disk — the on-disk file is left untouched until the first mutation.
-    pub fn from_existing(log_dir: PathBuf, entry: BackupLogEntry) -> Self {
-        BackupLogManager { log_dir, entry }
+    pub fn from_existing(log_dir: PathBuf, entry: BackupLogEntry, ownership: LogFileOwnership) -> Self {
+        BackupLogManager { log_dir, entry, ownership }
     }
 
     /// Appends a new transfer record and flushes to disk atomically.
@@ -232,6 +262,7 @@ impl BackupLogManager {
 
         std::fs::write(&tmp_path, json)
             .map_err(|e| format!("Failed to write backup log to {}: {}", tmp_path.display(), e))?;
+        self.ownership.apply_to(&tmp_path)?;
         std::fs::rename(&tmp_path, &file_path)
             .map_err(|e| format!("Failed to finalize backup log at {}: {}", file_path.display(), e))?;
         Ok(())
@@ -315,7 +346,12 @@ pub fn load_backup_log(media_dir: &Path) -> Result<BackupLogState, String> {
 
 
 /// Updates the `next_uuidv7` field of an already-written entry atomically.
-fn set_next_uuidv7_on_entry(log_dir: &Path, entry_uuid: &str, next_uuid: &str) -> Result<(), String> {
+fn set_next_uuidv7_on_entry(
+    log_dir: &Path,
+    entry_uuid: &str,
+    next_uuid: &str,
+    ownership: LogFileOwnership,
+) -> Result<(), String> {
     let file_path = log_dir.join(format!("{}.json", entry_uuid));
     let content   = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
@@ -334,6 +370,7 @@ fn set_next_uuidv7_on_entry(log_dir: &Path, entry_uuid: &str, next_uuid: &str) -
     let tmp_path = log_dir.join(format!("{}.json.tmp", entry_uuid));
     std::fs::write(&tmp_path, json_serialized)
         .map_err(|e| format!("Failed to write {}: {}", tmp_path.display(), e))?;
+    ownership.apply_to(&tmp_path)?;
     std::fs::rename(&tmp_path, &file_path)
         .map_err(|e| format!("Failed to finalize {}: {}", file_path.display(), e))?;
     Ok(())
