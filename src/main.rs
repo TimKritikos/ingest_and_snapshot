@@ -503,6 +503,7 @@ fn main() {
     }
     let media_version = std::fs::read_to_string(media_version_path).unwrap();
     if media_version != "v3.0-dev\n" &&
+        media_version != "v3.0\n" &&
         media_version != "v2.1\n" &&
         media_version != "v2.0\n"
     {
