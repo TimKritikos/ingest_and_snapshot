@@ -205,7 +205,7 @@ pub fn load_per_device_config(
         }
         if let Some(ref source_media) = entry.source_media {
             if !source_media_entries.iter().any(|source_media_iter| source_media_iter.directory == *source_media){
-                return Err(format!("There is a transfer that specifies an unknown storage device with id {}", source_media.display()));
+                return Err(format!("There is a transfer that specifies an unknown source media at {}", source_media.display()));
             }
         }
         match entry.input_path {
