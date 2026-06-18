@@ -706,9 +706,7 @@ fn render_device_picker(frame: &mut Frame, available_devices: Option<&[SourceMed
             is_current: false,
         }),
         Some(devices) => items.extend(devices.iter().map(|d| {
-            let model = d.device_model_name_pretty.as_deref()
-                .unwrap_or(&d.device_model_name);
-            let display_name = format!("{} {} (SN: {})", d.device_make_name, model, d.serial_number);
+            let display_name = d.display_name();
             let is_selected = device_override
                 .map(|ov| ov.directory == d.directory)
                 .unwrap_or(false);
@@ -984,10 +982,7 @@ fn render_transfer_info(frame: &mut Frame, area: Rect, query: &ApproveTransferQu
     let source_media_value: Option<String> = fields.source_media().map(|dir| {
         available_devices
             .and_then(|devs| devs.iter().find(|e| &e.directory == dir))
-            .map(|e| {
-                let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-                format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
-            })
+            .map(|e| e.display_name())
             .unwrap_or_else(|| dir.to_string_lossy().into_owned())
     });
 

@@ -120,6 +120,7 @@ struct SourceMediaInfo {
     device_make_name: String,
     device_model_name: String,
     device_model_name_pretty: Option<String>,
+    subdevice_id: Option<String>,
     device_unique_identification: SourceMediaUniqueIdentification,
     new_card_naming_scheme: CardNamingScheme,
     /// Path to a JPEG thumbnail of the device, relative to this source media's directory.
@@ -155,6 +156,7 @@ struct SourceMediaEntry {
     device_make_name: String,
     device_model_name: String,
     device_model_name_pretty: Option<String>,
+    subdevice_id: Option<String>,
     serial_number: String,
     new_card_naming_scheme: CardNamingScheme,
     directory: PathBuf, // The directory from which this source media configuration was loaded.
@@ -164,6 +166,15 @@ struct SourceMediaEntry {
     device_thumbnail: Option<PathBuf>,
 }
 
+impl SourceMediaEntry {
+    fn display_name(&self) -> String {
+        let model = self.device_model_name_pretty.as_deref().unwrap_or(&self.device_model_name);
+        match &self.subdevice_id {
+            Some(sub) => format!("{} {} (SN: {}) Sub: {}",self.device_make_name,model , self.serial_number, sub),
+            None      => format!("{} {} (SN: {})",self.device_make_name, model, self.serial_number),
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct MainConfig {
@@ -352,6 +363,7 @@ fn scan_source_media(media_dir: &Path) -> Result<(Vec<SourceMediaEntry>, Vec<Str
             device_make_name:         config.source_media_info.device_make_name,
             device_model_name:        config.source_media_info.device_model_name,
             device_model_name_pretty: config.source_media_info.device_model_name_pretty,
+            subdevice_id:             config.source_media_info.subdevice_id,
             serial_number:            config.source_media_info.device_unique_identification.serial_number,
             new_card_naming_scheme:   config.source_media_info.new_card_naming_scheme,
             directory:                subdir.path().strip_prefix(media_dir)

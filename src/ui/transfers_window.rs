@@ -109,10 +109,7 @@ impl Widget for TransferItem<'_> {
 
         let device_name: String = self.transfer.source_media_dir.as_deref()
             .and_then(|dir| self.available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
-            .map(|e| {
-                let model = e.device_model_name_pretty.as_deref().unwrap_or(&e.device_model_name);
-                format!("{} {} (SN: {})", e.device_make_name, model, e.serial_number)
-            })
+            .map(|e| e.display_name())
             .unwrap_or_default();
 
         let mut spans = vec![
