@@ -339,9 +339,10 @@ fn derive_current_speed(samples: &[TransferSample]) -> u64 {
     let second_last_sample = &samples[samples.len() - 2];
     let last_sample = &samples[samples.len() - 1];
     let time_difference_ms = last_sample.timestamp_ms.saturating_sub(second_last_sample.timestamp_ms);
-    if time_difference_ms > 0 {
-        last_sample.bytes_done.saturating_sub(second_last_sample.bytes_done) * 1000 / time_difference_ms
-    }else{ 0 }
+    if time_difference_ms == 0 {
+        return 0;
+    }
+    last_sample.bytes_done.saturating_sub(second_last_sample.bytes_done) * 1000 / time_difference_ms
 }
 
 fn derive_overall_speed(samples: &[TransferSample]) -> u64 {
@@ -349,18 +350,18 @@ fn derive_overall_speed(samples: &[TransferSample]) -> u64 {
         return 0;
     }
     let transfer_time_window_ms = samples.last().unwrap().timestamp_ms.saturating_sub(samples[0].timestamp_ms);
+    if transfer_time_window_ms == 0 {
+        return 0;
+    }
+
     let bytes_in_window = samples.last().unwrap().bytes_done.saturating_sub(samples[0].bytes_done);
-    if transfer_time_window_ms > 0 {
-        bytes_in_window * 1000 / transfer_time_window_ms
-    } else { 0 }
+    bytes_in_window * 1000 / transfer_time_window_ms
 }
 
 fn derive_peak_speed(samples: &[TransferSample]) -> u64 {
-    samples.windows(2).map(|pair| {
+    samples.windows(2).filter_map(|pair| {
         let time_difference_ms = pair[1].timestamp_ms.saturating_sub(pair[0].timestamp_ms);
-        if time_difference_ms > 0 {
-            pair[1].bytes_done.saturating_sub(pair[0].bytes_done) * 1000 / time_difference_ms
-        } else { 0 }
+        (pair[1].bytes_done.saturating_sub(pair[0].bytes_done) * 1000).checked_div(time_difference_ms)
     }).max().unwrap_or(0)
 }
 
