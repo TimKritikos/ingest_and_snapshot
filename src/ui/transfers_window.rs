@@ -239,12 +239,13 @@ fn render_braille_chart(buf: &mut Buffer, area: Rect, samples: &[TransferSample]
     }
 
     // Convert the sample data to data that maps byte transfer positions to transfer speed
-    let intervals: Vec<(u64, u64)> = samples.windows(2).map(|pair| {
+    let intervals: Vec<(u64, u64)> = samples.windows(2).filter_map(|pair| {
         let dt_ms     = pair[1].timestamp_ms.saturating_sub(pair[0].timestamp_ms);
         let db        = pair[1].bytes_done.saturating_sub(pair[0].bytes_done);
-        let speed     = if dt_ms > 0 { db * 1000 / dt_ms } else { 0 };
+        if dt_ms == 0 { return None };
+        let speed     = db * 1000 / dt_ms;
         let mid_bytes = pair[0].bytes_done / 2 + pair[1].bytes_done / 2;
-        (mid_bytes, speed)
+        Some((mid_bytes, speed))
     }).collect();
 
     if intervals.is_empty() { return; }
