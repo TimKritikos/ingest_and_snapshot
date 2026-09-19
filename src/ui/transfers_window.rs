@@ -103,9 +103,7 @@ impl Widget for TransferItem<'_> {
         let stats_style   = Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD);
         let sep_style     = Style::default().bg(bg);
 
-        let presentage = if self.transfer.bytes_total > 0 {
-            bytes_done * 100 / self.transfer.bytes_total
-        } else { 0 };
+        let presentage = (bytes_done*100).checked_div(self.transfer.bytes_total);
 
         let device_name: String = self.transfer.source_media_dir.as_deref()
             .and_then(|dir| self.available_devices?.iter().find(|e| e.directory.to_string_lossy() == dir))
@@ -117,7 +115,13 @@ impl Widget for TransferItem<'_> {
             Span::styled(badge_inner, badge_style),
             Span::styled("]", bracket_style),
             Span::styled(" ", sep_style),
-            Span::styled(format!("{:>3}% | ", presentage), stats_style),
+            Span::styled(
+            if let Some(presentage) = presentage {
+                format!("{:>3}% | ", presentage)
+            }else{
+                "     | ".to_string()
+            }
+            , stats_style),
             Span::styled(device_name.as_str(), name_style),
         ];
 
