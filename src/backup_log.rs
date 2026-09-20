@@ -284,10 +284,20 @@ impl BackupLogManager {
         self.entry.new_transfers.iter().any(|t| t.card_path == card_path)
     }
 
+
     /// Marks this backup log entry as a completed backup and flushes to disk atomically.
     /// A new entry is started on the next program run once an entry is marked complete.
     pub fn complete_backup(&mut self) -> Result<(), String> {
         self.entry.completed_backup = true;
+        self.flush()
+    }
+
+    /// Clears the flag set by [`Self::complete_backup`] and flushes to disk atomically.
+    ///
+    /// The snapshot workflow marks the backup complete before taking the snapshot that has to carry
+    /// that flag, so a run that then fails to produce its final snapshot has to put the log back
+    pub fn mark_backup_incomplete(&mut self) -> Result<(), String> {
+        self.entry.completed_backup = false;
         self.flush()
     }
 

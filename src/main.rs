@@ -46,6 +46,7 @@ mod mount_manager;
 mod backup_log;
 mod per_device_config;
 mod snapshot_logic;
+mod zfs_specific;
 #[cfg(feature = "dummy-ui-data")]
 mod dummy_ui_data;
 
@@ -635,6 +636,19 @@ fn main() {
     }
 
     ui.lock().unwrap().set_available_devices(source_media_entries.clone()).unwrap();
+
+    // Check if previous snapshot creation failed
+    if let Err(msg) = zfs_specific::check_correct_shutdown(&media_dir) {
+        let (response_tx, response_rx) = crossbeam_channel::unbounded::<()>();
+        ui.lock().unwrap().user_query(ui_api::UserQuery::FatalError(ui_api::FatalErrorQuery {
+            error: ui_api::FatalErrorKind::InconsistentSnapshotState(msg),
+            response_tx,
+        }), true).unwrap();
+        let _ = response_rx.recv();
+        ui.lock().unwrap().quit().unwrap();
+        if let Ok(mutex) = Arc::try_unwrap(ui) { mutex.into_inner().unwrap().join(); }
+        process::exit(1);
+    }
 
     let backup_log_state = match backup_log::load_backup_log(&media_dir) {
         Ok(state) => state,

@@ -19,15 +19,18 @@
 
 //! Drives the "Finish backup and do snapshot" workflow on its own thread.
 //!
-//! After the user supplies a snapshot message it creates a ZFS snapshot named
-//! `temp_YYYY-MM-DD_<message>`, then runs the `check` executable found at the root of the
-//! snapshot's media directory (`<media>/.zfs/snapshot/<snapshot>/check`). The check program runs
-//! under a pseudo-terminal so its live, possibly cursor-controlled output (the kind `tput
-//! cuu/cuf/cud` and SGR colour codes produce) is streamed verbatim to the UI's check terminal.
+//! After the user supplies a snapshot message, [`crate::zfs_specific::do_snapshot_steps_before_check`]
+//! marks the backup log complete and creates the snapshot to be checked, then this module runs the
+//! `check` executable found at the root of that snapshot (`<media>/.zfs/snapshot/<snapshot>/check`).
+//! The check program runs under a pseudo-terminal so its live, possibly cursor-controlled output
+//! (the kind `tput cuu/cuf/cud` and SGR colour codes produce) is streamed verbatim to the UI's check
+//! terminal.
 //!
-//! If the check succeeds — or the user chooses to complete early — the `temp_` prefix is dropped
-//! and the optional success callback runs. If it fails the optional failure callback runs and the
-//! user is asked whether to keep (drop the suffix) or destroy the snapshot.
+//! If the check succeeds, the user chooses to complete early, or the user chooses to keep the
+//! snapshot despite a failed check (treated identically to success — an acknowledged, known issue
+//! that will not be fixed on this snapshot), [`crate::zfs_specific::do_snapshot_steps_after_check`]
+//! renames that same snapshot to its final name. Otherwise the optional failure callback runs and
+//! [`crate::zfs_specific::abandon_snapshot_run`] puts the log back and destroys what was created.
 
 use std::fs::File;
 use std::io::Read;
@@ -48,11 +51,10 @@ use crate::ui_api::{
     SnapshotNameResponse, UserQuery, SnapshotNameQuery, UiToLogicMessage,
 };
 use crate::backup_log::BackupLogManager;
+use crate::zfs_specific;
 
 /// Filename of the check executable expected at the root of the snapshot's media directory.
 const CHECK_EXECUTABLE_NAME: &str = "check";
-/// Prefix carried by a snapshot until its check passes (or the user keeps it anyway).
-const TEMP_SNAPSHOT_PREFIX: &str = "temp_";
 /// Path under the dataset mountpoint where ZFS exposes snapshots for browsing.
 const ZFS_SNAPSHOT_SUBDIR: &str = ".zfs/snapshot";
 /// Fallback message used when the user submits an empty snapshot name.
@@ -123,7 +125,6 @@ fn run_snapshot(
     };
 
     let final_name = format!("{}_{}", snapshot_date_utc(), message);
-    let temp_name  = format!("{}{}", TEMP_SNAPSHOT_PREFIX, final_name);
 
     // Enter check-terminal mode: updates flow logic -> UI, action ids flow UI -> logic.
     let (updates_tx, updates_rx) = crossbeam_channel::unbounded::<SnapshotUpdate>();
@@ -132,25 +133,16 @@ fn run_snapshot(
         return;
     }
 
-    write_status(&updates_tx, &format!("Generating snapshot {} ...", temp_name));
-
-    let dataset = match detect_zfs_dataset(&media_dir) {
-        Ok(dataset) => dataset,
+    let run = match zfs_specific::do_snapshot_steps_before_check(&updates_tx, &media_dir, &final_name, &backup_log_manager) {
+        Ok(run) => run,
         Err(error) => {
-            write_error(&updates_tx, &format!("Could not determine the ZFS dataset: {}", error));
+            write_error(&updates_tx, &error);
             offer_return_and_exit(&updates_tx, &action_rx);
             return;
         }
     };
 
-    if let Err(error) = run_zfs(&["snapshot", &snapshot_id(&dataset, &temp_name)]) {
-        write_error(&updates_tx, &format!("Failed to create snapshot: {}", error));
-        offer_return_and_exit(&updates_tx, &action_rx);
-        return;
-    }
-    write_status(&updates_tx, &format!("Snapshot {} created.", temp_name));
-
-    let snapshot_root = media_dir.join(ZFS_SNAPSHOT_SUBDIR).join(&temp_name);
+    let snapshot_root = media_dir.join(ZFS_SNAPSHOT_SUBDIR).join(&run.check_name);
     let check_executable = snapshot_root.join(CHECK_EXECUTABLE_NAME);
     write_status(&updates_tx, &format!("Executing check program: {}", check_executable.display()));
 
@@ -183,18 +175,13 @@ fn run_snapshot(
             } else {
                 write_success(&updates_tx, "Check completed successfully.");
             }
-            // The backup is done: finalize, then mark the backup complete and exit (the same
-            // teardown as "Unmount and exit") instead of returning to the main screen. On a
-            // finalize failure, fall through to the return-to-main option so the error is visible.
-            if finalize_snapshot(&updates_tx, &dataset, &temp_name, &final_name, &media_dir, config.success_callback.as_deref()) {
-                complete_backup_and_exit(&updates_tx, &action_rx, &backup_log_manager, &ui_to_logic_tx);
-                return;
-            }
+            finish_backup(&updates_tx, &action_rx, &run, &final_name, &media_dir, &config, &backup_log_manager, &ui_to_logic_tx);
+            return;
         }
         CheckOutcome::Failure => {
             write_error(&updates_tx, "Check did not complete successfully.");
             if let Some(callback) = config.failure_callback.as_deref() {
-                run_callback(&updates_tx, callback, &final_name, &temp_name, &media_dir);
+                run_callback(&updates_tx, callback, &final_name, &run.check_name, &media_dir);
             }
             set_actions(&updates_tx, vec![
                 button(ACTION_KEEP_ANYWAY, "Keep snapshot anyway", SnapshotActionStyle::Confirm),
@@ -203,21 +190,48 @@ fn run_snapshot(
             write_status(&updates_tx, "Keep the snapshot anyway, or destroy it?");
             match wait_for_action(&action_rx, &[ACTION_KEEP_ANYWAY, ACTION_DESTROY]) {
                 Some(ACTION_KEEP_ANYWAY) => {
-                    // Keeping drops the temp_ prefix just like the success case, but the success
-                    // callback is intentionally not run because the check did not pass.
-                    finalize_snapshot(&updates_tx, &dataset, &temp_name, &final_name, &media_dir, None);
+                    // Keeping despite a failed check is treated exactly like a pass: an
+                    // acknowledged, known issue that will not be fixed on this snapshot.
+                    write_status(&updates_tx, "Keeping the snapshot; treating it as a completed backup.");
+                    finish_backup(&updates_tx, &action_rx, &run, &final_name, &media_dir, &config, &backup_log_manager, &ui_to_logic_tx);
+                    return;
                 }
-                Some(_) => destroy_snapshot(&updates_tx, &dataset, &temp_name),
+                Some(_) => zfs_specific::abandon_snapshot_run(&updates_tx, &run, &backup_log_manager),
                 None => return, // UI disconnected
             }
         }
         CheckOutcome::RemoveEarly => {
             write_status(&updates_tx, "Removing the snapshot.");
-            destroy_snapshot(&updates_tx, &dataset, &temp_name);
+            zfs_specific::abandon_snapshot_run(&updates_tx, &run, &backup_log_manager);
         }
     }
 
     offer_return_and_exit(&updates_tx, &action_rx);
+}
+
+/// Does the final steps of the snapshot. A failure there has already unwound itself — the backup log
+/// is back to incomplete and nothing is left claiming a backup that has no snapshot — so this only
+/// reports it and falls back to the normal return-to-main option, like every other failure path here.
+#[allow(clippy::too_many_arguments)]
+fn finish_backup(
+    updates_tx: &Sender<SnapshotUpdate>,
+    action_rx: &Receiver<u32>,
+    run: &zfs_specific::SnapshotRun,
+    final_name: &str,
+    media_dir: &Path,
+    config: &SnapshotConfig,
+    backup_log_manager: &Arc<Mutex<BackupLogManager>>,
+    ui_to_logic_tx: &Sender<UiToLogicMessage>,
+) {
+    match zfs_specific::do_snapshot_steps_after_check(
+        updates_tx, run, final_name, media_dir, backup_log_manager, config.success_callback.as_deref(),
+    ) {
+        Ok(()) => complete_backup_and_exit(updates_tx, action_rx, ui_to_logic_tx),
+        Err(error) => {
+            write_error(updates_tx, &format!("Failed to finalize the backup: {}", error));
+            offer_return_and_exit(updates_tx, action_rx);
+        }
+    }
 }
 
 /// Issues the snapshot-name query and blocks until the user provides a name or cancels.
@@ -265,110 +279,11 @@ fn run_check_loop(child: &mut Child, action_rx: &Receiver<u32>) -> Option<CheckO
     }
 }
 
-/// Renames `dataset@temp_name` to `dataset@final_name`, dropping the `temp_` prefix, and runs the
-/// optional success callback when the rename succeeds. Returns `true` when the snapshot was
-/// successfully renamed.
-fn finalize_snapshot(
-    updates_tx: &Sender<SnapshotUpdate>,
-    dataset: &str,
-    temp_name: &str,
-    final_name: &str,
-    media_dir: &Path,
-    success_callback: Option<&str>,
-) -> bool {
-    if let Err(error) = unmount_snapshot(dataset, temp_name) {
-        write_error(updates_tx, &format!("Warning: could not unmount snapshot before rename: {}", error));
-    }
-    match run_zfs(&["rename", &snapshot_id(dataset, temp_name), &snapshot_id(dataset, final_name)]) {
-        Ok(()) => {
-            write_success(updates_tx, &format!("Snapshot finalized as {}.", final_name));
-            if let Some(callback) = success_callback {
-                run_callback(updates_tx, callback, final_name, final_name, media_dir);
-            }
-            true
-        }
-        Err(error) => {
-            write_error(updates_tx, &format!("Failed to finalize snapshot: {}", error));
-            false
-        }
-    }
-}
-
-fn destroy_snapshot(updates_tx: &Sender<SnapshotUpdate>, dataset: &str, temp_name: &str) {
-    if let Err(error) = unmount_snapshot(dataset, temp_name) {
-        write_error(updates_tx, &format!("Warning: could not unmount snapshot before destroy: {}", error));
-    }
-    match run_zfs(&["destroy", &snapshot_id(dataset, temp_name)]) {
-        Ok(())     => write_status(updates_tx, "Snapshot destroyed."),
-        Err(error) => write_error(updates_tx, &format!("Failed to destroy snapshot: {}", error)),
-    }
-}
-
-/// Unmounts the snapshot's `.zfs` automount. ZFS creates this mount the moment the check program's
-/// working directory is set inside `.zfs/snapshot/<snapshot>/`, and a mounted snapshot cannot be
-/// renamed or destroyed ("dataset is busy"). The check child has already been reaped, so nothing
-/// else holds the mount; `umount` is synchronous, so once it returns the following `zfs` operation
-/// is safe — no waiting or retrying is required.
-///
-/// The exact mount target is read from `/proc/self/mounts` by matching the `dataset@snapshot`
-/// source, rather than reconstructed from the media path, so it works regardless of symlinks or how
-/// the media directory was spelled. Returns `Ok(())` when the snapshot is no longer mounted
-/// (including when it never was); returns an error only if a `umount` of a present mount failed.
-fn unmount_snapshot(dataset: &str, snapshot_name: &str) -> Result<(), String> {
-    let source = snapshot_id(dataset, snapshot_name);
-    let mounts = std::fs::read_to_string("/proc/self/mounts")
-        .map_err(|e| format!("could not read /proc/self/mounts: {}", e))?;
-
-    let mut last_error: Option<String> = None;
-    for line in mounts.lines() {
-        let mut fields = line.split_whitespace();
-        let mount_source = fields.next().unwrap_or("");
-        let mount_target = fields.next().unwrap_or("");
-        if mount_source != source {
-            continue;
-        }
-        // /proc mount fields octal-escape spaces and similar characters in the target path.
-        let target = unescape_proc_mount_path(mount_target);
-        let output = Command::new("umount").arg(&target).output();
-        match output {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => last_error = Some(format!("umount {}: {}", target, String::from_utf8_lossy(&output.stderr).trim())),
-            Err(error)  => last_error = Some(format!("umount {}: {}", target, error)),
-        }
-    }
-
-    match last_error {
-        Some(error) => Err(error),
-        None        => Ok(()),
-    }
-}
-
-/// Decodes the octal escapes (`\040` for space, etc.) that `/proc/self/mounts` uses in path fields.
-fn unescape_proc_mount_path(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut decoded = String::with_capacity(raw.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let is_octal_escape = bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && bytes[index + 1..index + 4].iter().all(|b| b.is_ascii_digit());
-        if is_octal_escape {
-            if let Ok(code) = u8::from_str_radix(&raw[index + 1..index + 4], 8) {
-                decoded.push(code as char);
-                index += 4;
-                continue;
-            }
-        }
-        decoded.push(bytes[index] as char);
-        index += 1;
-    }
-    decoded
-}
-
 /// Runs a callback executable, passing the snapshot's final name, the name it currently has on disk
-/// (which differs only while the `temp_` prefix is still present), and the media directory. The
-/// callback's own output is echoed into the check terminal.
-fn run_callback(
+/// (which differs from `snapshot_name` only while the check-stage snapshot hasn't been finalized
+/// yet, e.g. the failure callback), and the media directory. The callback's own output is echoed
+/// into the check terminal.
+pub(crate) fn run_callback(
     updates_tx: &Sender<SnapshotUpdate>,
     callback: &str,
     snapshot_name: &str,
@@ -492,36 +407,25 @@ fn offer_return_and_exit(updates_tx: &Sender<SnapshotUpdate>, action_rx: &Receiv
     let _ = updates_tx.send(SnapshotUpdate::Exit);
 }
 
-/// Offers the single "Complete backup and exit" button shown after a successful check. When the
-/// user selects it, the current backup log entry is marked complete and the application is asked to
-/// unmount everything and exit (the same teardown as "Unmount and exit"). If marking the backup
-/// fails, the snapshot stays put and the user is offered the normal return-to-main option instead.
+/// Offers the single "Complete backup and exit" button shown once `zfs_specific::do_snapshot_steps_after_check`
+/// has already marked the backup log complete and finalized the snapshot. Selecting it asks the
+/// application to unmount everything and exit (the same teardown as "Unmount and exit").
 fn complete_backup_and_exit(
     updates_tx: &Sender<SnapshotUpdate>,
     action_rx: &Receiver<u32>,
-    backup_log_manager: &Arc<Mutex<BackupLogManager>>,
     ui_to_logic_tx: &Sender<UiToLogicMessage>,
 ) {
     set_actions(updates_tx, vec![
         button(ACTION_COMPLETE_BACKUP, "Complete backup and exit", SnapshotActionStyle::Confirm),
     ]);
-    write_status(updates_tx, "Select \"Complete backup and exit\" to mark the backup complete and exit.");
+    write_status(updates_tx, "Select \"Complete backup and exit\" to exit.");
     if wait_for_action(action_rx, &[ACTION_COMPLETE_BACKUP]).is_none() {
         return; // UI disconnected
     }
 
-    match backup_log_manager.lock().unwrap().complete_backup() {
-        Ok(()) => {
-            write_success(updates_tx, "Backup marked complete. Unmounting and exiting ...");
-            // The main loop performs the unmount-and-exit teardown; the UI tears down with it, so
-            // there is no need to send SnapshotUpdate::Exit here.
-            let _ = ui_to_logic_tx.send(UiToLogicMessage::CompleteBackupAndExit);
-        }
-        Err(error) => {
-            write_error(updates_tx, &format!("Failed to mark backup as complete: {}", error));
-            offer_return_and_exit(updates_tx, action_rx);
-        }
-    }
+    // The main loop performs the unmount-and-exit teardown; the UI tears down with it, so there is
+    // no need to send SnapshotUpdate::Exit here.
+    let _ = ui_to_logic_tx.send(UiToLogicMessage::CompleteBackupAndExit);
 }
 
 /// Blocks until the user picks one of `allowed` action ids. Returns `None` if the UI disconnected.
@@ -544,17 +448,17 @@ fn set_actions(updates_tx: &Sender<SnapshotUpdate>, actions: Vec<SnapshotActionB
 }
 
 /// Writes a neutral status line into the terminal (cyan, on its own line).
-fn write_status(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
+pub(crate) fn write_status(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
     write_colored_line(updates_tx, message, "36");
 }
 
 /// Writes a success line into the terminal (green).
-fn write_success(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
+pub(crate) fn write_success(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
     write_colored_line(updates_tx, message, "32");
 }
 
 /// Writes an error line into the terminal (red).
-fn write_error(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
+pub(crate) fn write_error(updates_tx: &Sender<SnapshotUpdate>, message: &str) {
     write_colored_line(updates_tx, message, "31");
 }
 
@@ -577,42 +481,6 @@ fn normalize_newlines(bytes: &[u8]) -> Vec<u8> {
         previous = byte;
     }
     out
-}
-
-/// `dataset@snapshot` identifier used by every `zfs` subcommand.
-fn snapshot_id(dataset: &str, snapshot_name: &str) -> String {
-    format!("{}@{}", dataset, snapshot_name)
-}
-
-/// Determines the ZFS dataset backing `media_dir` via `findmnt`.
-fn detect_zfs_dataset(media_dir: &Path) -> Result<String, String> {
-    let output = Command::new("findmnt")
-        .args(["-n", "-o", "SOURCE", "--target"])
-        .arg(media_dir)
-        .output()
-        .map_err(|e| format!("failed to run findmnt: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!("findmnt failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-
-    let dataset = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if dataset.is_empty() {
-        return Err(format!("no mount source found for {}", media_dir.display()));
-    }
-    Ok(dataset)
-}
-
-fn run_zfs(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("zfs")
-        .args(args)
-        .output()
-        .map_err(|e| format!("failed to run `zfs {}`: {}", args.join(" "), e))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!("`zfs {}`: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim()))
-    }
 }
 
 /// Keeps only ZFS-name-safe characters, replacing anything else with `_`. Falls back to a default

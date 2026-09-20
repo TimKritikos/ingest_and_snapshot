@@ -1116,6 +1116,7 @@ fn render_fatal_error(frame: &mut Frame, area: Rect, query: &FatalErrorQuery) {
         FatalErrorKind::Transfer(msg)       => ("Data transfer error", msg.as_str()),
         FatalErrorKind::ActiveTransfers     => ("Cannot quit while transfers are in progress", "Please wait for all active transfers to complete before quitting."),
         FatalErrorKind::PerDeviceConfig(msg) => ("Failed to load per-device config", msg.as_str()),
+        FatalErrorKind::InconsistentSnapshotState(msg) => ("Backup snapshot left in an inconsistent state", msg.as_str()),
     };
 
     let rows = Layout::default()

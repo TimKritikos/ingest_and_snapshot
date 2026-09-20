@@ -107,6 +107,7 @@ pub enum FatalErrorKind {
     Transfer(String),
     ActiveTransfers,
     PerDeviceConfig(String),
+    InconsistentSnapshotState(String),
 }
 
 pub struct FatalErrorQuery {
