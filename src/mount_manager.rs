@@ -164,8 +164,7 @@ impl MountManager {
     /// Unmounts all actively-mounted filesystems synchronously. Used on program exit.
     /// Failed-but-present entries are just dropped (no kernel state to clean up).
     pub fn unmount_all_sync(&mut self) {
-        let mounts: Vec<_> = self.mounts.drain(..).collect();
-        for entry in mounts {
+        for entry in self.mounts.drain(..) {
             if entry.is_mounted {
                 if let Err(e) = do_unmount(&entry.mountpoint) {
                     eprintln!("Warning: failed to unmount {:?} during exit: {}", entry.mountpoint, e);
